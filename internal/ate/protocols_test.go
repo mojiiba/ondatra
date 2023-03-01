@@ -21,8 +21,8 @@ import (
 
 	"github.com/openconfig/ondatra/internal/ixconfig"
 
-	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	opb "github.com/openconfig/ondatra/proto"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 func clientWithTopoCfg(ifName string) *ixATE {
@@ -363,6 +363,37 @@ func TestAddIpProtocols(t *testing.T) {
 		wantIpv4Name: fmt.Sprintf("IPv4 on %s", ifName),
 		wantIpv6Name: fmt.Sprintf("IPv6 on %s", ifName),
 	}, {
+		desc: "Valid config - unspecified gateway",
+		ifcfg: &opb.InterfaceConfig{
+			Name: ifName,
+			Ipv4: &opb.IpConfig{
+				AddressCidr:    "192.168.1.1/30",
+				DefaultGateway: "0.0.0.0",
+			},
+			Ipv6: &opb.IpConfig{
+				AddressCidr:    "2001::4860:193:168:1:1/126",
+				DefaultGateway: "::",
+			},
+		},
+		wantCfg: &ixconfig.TopologyEthernet{
+			Ipv4: []*ixconfig.TopologyIpv4{{
+				Name:           ixconfig.String(fmt.Sprintf("IPv4 on %s", ifName)),
+				Address:        ixconfig.MultivalueStr("192.168.1.1"),
+				GatewayIp:      ixconfig.MultivalueStr("0.0.0.0"),
+				Prefix:         ixconfig.MultivalueUint32(30),
+				ResolveGateway: ixconfig.MultivalueTrue(),
+			}},
+			Ipv6: []*ixconfig.TopologyIpv6{{
+				Name:           ixconfig.String(fmt.Sprintf("IPv6 on %s", ifName)),
+				Address:        ixconfig.MultivalueStr("2001::4860:193:168:1:1"),
+				GatewayIp:      ixconfig.MultivalueStr("::"),
+				Prefix:         ixconfig.MultivalueUint32(126),
+				ResolveGateway: ixconfig.MultivalueTrue(),
+			}},
+		},
+		wantIpv4Name: fmt.Sprintf("IPv4 on %s", ifName),
+		wantIpv6Name: fmt.Sprintf("IPv6 on %s", ifName),
+	}, {
 		desc: "Valid config on Macsec",
 		ifcfg: &opb.InterfaceConfig{
 			Name: ifName,
@@ -529,7 +560,7 @@ func TestAddISISProtocols(t *testing.T) {
 	tests := []struct {
 		desc                                              string
 		ifc                                               *opb.InterfaceConfig
-		wantIsisIntfName, wantIsisRtrName                 string
+		wantIsisIntfName, wantIsisRtrName, wantRtrCapID   string
 		wantEnable3WayHandshake, wantSR, wantAdjacencySid bool
 		wantNetwGrpCount                                  int
 	}{{
@@ -615,6 +646,19 @@ func TestAddISISProtocols(t *testing.T) {
 		wantIsisIntfName: fmt.Sprintf("IS-IS on %s", ifName),
 		wantIsisRtrName:  fmt.Sprintf("IS-IS Router on %s", ifName),
 		wantNetwGrpCount: 2,
+	}, {
+		desc: "IS-IS config with router capability ID",
+		ifc: &opb.InterfaceConfig{
+			Name: ifName,
+			Isis: &opb.ISISConfig{
+				Level:              opb.ISISConfig_L1,
+				NetworkType:        opb.ISISConfig_BROADCAST,
+				CapabilityRouterId: "1.2.3.4",
+			},
+		},
+		wantIsisIntfName: fmt.Sprintf("IS-IS on %s", ifName),
+		wantIsisRtrName:  fmt.Sprintf("IS-IS Router on %s", ifName),
+		wantRtrCapID:     "1.2.3.4",
 	}}
 	for _, test := range tests {
 		t.Run(test.desc, func(t *testing.T) {
@@ -624,7 +668,7 @@ func TestAddISISProtocols(t *testing.T) {
 				t.Fatalf("addISISProtocols: unexpected error: %v", gotErr)
 			}
 
-			var gotIsisIntfName, gotIsisRtrName string
+			var gotIsisIntfName, gotIsisRtrName, gotRtrCapID string
 			var gotEnable3WayHandshake, gotSR, gotAdjacencySid bool
 			dg := c.cfg.Topology[0].DeviceGroup[0]
 			eth := dg.Ethernet[0]
@@ -640,6 +684,9 @@ func TestAddISISProtocols(t *testing.T) {
 				rtr := dg.IsisL3Router[0]
 				gotIsisRtrName = *(rtr.Name)
 				gotSR = *(rtr.EnableSR)
+				if rtr.RtrcapId != nil {
+					gotRtrCapID = *(rtr.RtrcapId.SingleValue.Value)
+				}
 			}
 			gotNetwGrpCount := len(dg.NetworkGroup)
 
@@ -666,6 +713,9 @@ func TestAddISISProtocols(t *testing.T) {
 			}
 			if test.wantAdjacencySid != gotAdjacencySid {
 				t.Errorf("addISISProtocols: incorrect adjacency config: enabled SID? %t, wanted enabled SID? %t", gotAdjacencySid, test.wantAdjacencySid)
+			}
+			if test.wantRtrCapID != gotRtrCapID {
+				t.Errorf("addISISProtocols: incorrect router capability ID: got %q, want %q", gotRtrCapID, test.wantRtrCapID)
 			}
 			if test.wantNetwGrpCount != gotNetwGrpCount {
 				t.Errorf("addISISProtocols: incorrect network group config: got %d network group, wanted %d", gotNetwGrpCount, test.wantNetwGrpCount)
@@ -1807,6 +1857,10 @@ func TestBgpV4Peers(t *testing.T) {
 			KeepaliveTimer:     ixconfig.MultivalueUint32(0),
 			Enable4ByteAs:      ixconfig.MultivalueFalse(),
 			LocalAs2Bytes:      ixconfig.MultivalueUint32(15169),
+			ActAsRestarted:     ixconfig.MultivalueBool(false),
+			AdvertiseEndOfRib:  ixconfig.MultivalueBool(false),
+			RestartTime:        ixconfig.MultivalueUint32(0),
+			StaleTime:          ixconfig.MultivalueUint32(0),
 			NumberSRTEPolicies: ixconfig.NumberUint32(0),
 			FilterIpV4Unicast:  ixconfig.MultivalueTrue(),
 		},
@@ -1830,6 +1884,10 @@ func TestBgpV4Peers(t *testing.T) {
 			Enable4ByteAs:                 ixconfig.MultivalueFalse(),
 			NumberSRTEPolicies:            ixconfig.NumberUint32(0),
 			LocalAs2Bytes:                 ixconfig.MultivalueUint32(15169),
+			ActAsRestarted:                ixconfig.MultivalueBool(false),
+			AdvertiseEndOfRib:             ixconfig.MultivalueBool(false),
+			RestartTime:                   ixconfig.MultivalueUint32(0),
+			StaleTime:                     ixconfig.MultivalueUint32(0),
 			CapabilityIpV4Unicast:         ixconfig.MultivalueFalse(),
 			CapabilityIpV4Multicast:       ixconfig.MultivalueFalse(),
 			EnableGracefulRestart:         ixconfig.MultivalueFalse(),
@@ -1871,6 +1929,10 @@ func TestBgpV4Peers(t *testing.T) {
 			KeepaliveTimer:     ixconfig.MultivalueUint32(0),
 			Enable4ByteAs:      ixconfig.MultivalueTrue(),
 			LocalAs4Bytes:      ixconfig.MultivalueUint32(151690),
+			ActAsRestarted:     ixconfig.MultivalueBool(false),
+			AdvertiseEndOfRib:  ixconfig.MultivalueBool(false),
+			RestartTime:        ixconfig.MultivalueUint32(0),
+			StaleTime:          ixconfig.MultivalueUint32(0),
 			NumberSRTEPolicies: ixconfig.NumberUint32(0),
 			FilterIpV4Unicast:  ixconfig.MultivalueTrue(),
 		},
@@ -1891,6 +1953,10 @@ func TestBgpV4Peers(t *testing.T) {
 			KeepaliveTimer:     ixconfig.MultivalueUint32(0),
 			Enable4ByteAs:      ixconfig.MultivalueFalse(),
 			LocalAs2Bytes:      ixconfig.MultivalueUint32(15169),
+			ActAsRestarted:     ixconfig.MultivalueBool(false),
+			AdvertiseEndOfRib:  ixconfig.MultivalueBool(false),
+			RestartTime:        ixconfig.MultivalueUint32(0),
+			StaleTime:          ixconfig.MultivalueUint32(0),
 			Authentication:     ixconfig.MultivalueStr("md5"),
 			Md5Key:             ixconfig.MultivalueStr("aaaa"),
 			NumberSRTEPolicies: ixconfig.NumberUint32(0),
@@ -1949,6 +2015,10 @@ func TestBgpV4Peers(t *testing.T) {
 			KeepaliveTimer:     ixconfig.MultivalueUint32(0),
 			Enable4ByteAs:      ixconfig.MultivalueFalse(),
 			LocalAs2Bytes:      ixconfig.MultivalueUint32(15169),
+			ActAsRestarted:     ixconfig.MultivalueBool(false),
+			AdvertiseEndOfRib:  ixconfig.MultivalueBool(false),
+			RestartTime:        ixconfig.MultivalueUint32(0),
+			StaleTime:          ixconfig.MultivalueUint32(0),
 			NumberSRTEPolicies: ixconfig.NumberUint32(2),
 			FilterIpV4Unicast:  ixconfig.MultivalueTrue(),
 			BgpSRTEPoliciesListV4: &ixconfig.TopologyBgpSrtePoliciesListV4{
@@ -2049,6 +2119,10 @@ func TestBgpV6Peers(t *testing.T) {
 			KeepaliveTimer:     ixconfig.MultivalueUint32(0),
 			Enable4ByteAs:      ixconfig.MultivalueFalse(),
 			LocalAs2Bytes:      ixconfig.MultivalueUint32(15169),
+			ActAsRestarted:     ixconfig.MultivalueBool(false),
+			AdvertiseEndOfRib:  ixconfig.MultivalueBool(false),
+			RestartTime:        ixconfig.MultivalueUint32(0),
+			StaleTime:          ixconfig.MultivalueUint32(0),
 			NumberSRTEPolicies: ixconfig.NumberUint32(0),
 			FilterIpV6Unicast:  ixconfig.MultivalueTrue(),
 		},
@@ -2072,6 +2146,10 @@ func TestBgpV6Peers(t *testing.T) {
 			Enable4ByteAs:                    ixconfig.MultivalueFalse(),
 			NumberSRTEPolicies:               ixconfig.NumberUint32(0),
 			LocalAs2Bytes:                    ixconfig.MultivalueUint32(15169),
+			ActAsRestarted:                   ixconfig.MultivalueBool(false),
+			AdvertiseEndOfRib:                ixconfig.MultivalueBool(false),
+			RestartTime:                      ixconfig.MultivalueUint32(0),
+			StaleTime:                        ixconfig.MultivalueUint32(0),
 			CapabilityIpV4Unicast:            ixconfig.MultivalueFalse(),
 			CapabilityIpV4Multicast:          ixconfig.MultivalueFalse(),
 			CapabilityIpV4MplsVpn:            ixconfig.MultivalueFalse(),
@@ -2115,6 +2193,10 @@ func TestBgpV6Peers(t *testing.T) {
 			Enable4ByteAs:      ixconfig.MultivalueTrue(),
 			LocalAs4Bytes:      ixconfig.MultivalueUint32(151690),
 			NumberSRTEPolicies: ixconfig.NumberUint32(0),
+			ActAsRestarted:     ixconfig.MultivalueBool(false),
+			AdvertiseEndOfRib:  ixconfig.MultivalueBool(false),
+			RestartTime:        ixconfig.MultivalueUint32(0),
+			StaleTime:          ixconfig.MultivalueUint32(0),
 			FilterIpV6Unicast:  ixconfig.MultivalueTrue(),
 		},
 	}, {
@@ -2134,6 +2216,10 @@ func TestBgpV6Peers(t *testing.T) {
 			KeepaliveTimer:     ixconfig.MultivalueUint32(0),
 			Enable4ByteAs:      ixconfig.MultivalueFalse(),
 			LocalAs2Bytes:      ixconfig.MultivalueUint32(15169),
+			ActAsRestarted:     ixconfig.MultivalueBool(false),
+			AdvertiseEndOfRib:  ixconfig.MultivalueBool(false),
+			RestartTime:        ixconfig.MultivalueUint32(0),
+			StaleTime:          ixconfig.MultivalueUint32(0),
 			Authentication:     ixconfig.MultivalueStr("md5"),
 			Md5Key:             ixconfig.MultivalueStr("aaaa"),
 			NumberSRTEPolicies: ixconfig.NumberUint32(0),
@@ -2196,6 +2282,10 @@ func TestBgpV6Peers(t *testing.T) {
 			KeepaliveTimer:     ixconfig.MultivalueUint32(0),
 			Enable4ByteAs:      ixconfig.MultivalueFalse(),
 			LocalAs2Bytes:      ixconfig.MultivalueUint32(15169),
+			ActAsRestarted:     ixconfig.MultivalueBool(false),
+			AdvertiseEndOfRib:  ixconfig.MultivalueBool(false),
+			RestartTime:        ixconfig.MultivalueUint32(0),
+			StaleTime:          ixconfig.MultivalueUint32(0),
 			NumberSRTEPolicies: ixconfig.NumberUint32(2),
 			FilterIpV6Unicast:  ixconfig.MultivalueTrue(),
 			BgpSRTEPoliciesListV6: &ixconfig.TopologyBgpSrtePoliciesListV6{
@@ -2564,6 +2654,87 @@ func TestAddRSVPProtocols(t *testing.T) {
 			}
 			if diff := jsonCfgDiff(t, test.wantDeviceGroup, intf.isrToNetworkGroup[isrName].DeviceGroup[0]); diff != "" {
 				t.Fatalf("addRSVPProtocols: unexpected RSVP-TE device group (-want/+got): %s", diff)
+			}
+		})
+	}
+}
+
+func TestAddDHCPProtocols(t *testing.T) {
+	const intfName = "intf1"
+	clientWithTopo := func() *ixATE {
+		cfg := &ixconfig.Ixnetwork{
+			Topology: []*ixconfig.Topology{{
+				DeviceGroup: []*ixconfig.TopologyDeviceGroup{{
+					Ethernet: []*ixconfig.TopologyEthernet{&ixconfig.TopologyEthernet{
+						Ipv6: []*ixconfig.TopologyIpv6{&ixconfig.TopologyIpv6{}},
+					}}}},
+			}},
+		}
+		return &ixATE{
+			cfg: cfg,
+			intfs: map[string]*intf{
+				intfName: &intf{
+					deviceGroup: cfg.Topology[0].DeviceGroup[0],
+					ipv6:        cfg.Topology[0].DeviceGroup[0].Ethernet[0].Ipv6[0],
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		desc         string
+		intf         *opb.InterfaceConfig
+		wantV6Client *ixconfig.TopologyDhcpv6client
+		wantV6Server *ixconfig.TopologyDhcpv6server
+	}{{
+		desc: "dhcp v6 client",
+		intf: &opb.InterfaceConfig{
+			Name:         intfName,
+			Dhcpv6Client: &opb.DhcpV6Client{},
+		},
+		wantV6Client: &ixconfig.TopologyDhcpv6client{},
+	}, {
+		desc: "dhcp v6 server",
+		intf: &opb.InterfaceConfig{
+			Name: intfName,
+			Dhcpv6Server: &opb.DhcpV6Server{
+				LeaseAddrs: &opb.AddressRange{
+					Min:   "::10",
+					Max:   "::80",
+					Count: 5,
+				},
+			},
+		},
+		wantV6Server: &ixconfig.TopologyDhcpv6server{
+			Dhcp6ServerSessions: &ixconfig.TopologyDhcp6ServerSessions{
+				IpAddress:          ixconfig.MultivalueStr("::10"),
+				IpAddressIncrement: ixconfig.MultivalueStr("::16"),
+				PoolSize:           ixconfig.MultivalueUint32(5),
+			},
+		},
+	}}
+
+	for _, test := range tests {
+		t.Run(test.desc, func(t *testing.T) {
+			c := clientWithTopo()
+			if err := c.addDHCPProtocols(test.intf); err != nil {
+				t.Fatalf("addDHCPProtocols: unexpected error: %v", err)
+			}
+
+			intf := c.intfs[intfName]
+			var gotV6Client *ixconfig.TopologyDhcpv6client
+			if gotV6Clients := intf.deviceGroup.Ethernet[0].Dhcpv6client; len(gotV6Clients) > 0 {
+				gotV6Client = gotV6Clients[0]
+			}
+			if diff := jsonCfgDiff(t, test.wantV6Client, gotV6Client); diff != "" {
+				t.Fatalf("addDHCPProtocols: unexpected v6 client config (-want/+got): %s", diff)
+			}
+			var gotV6Server *ixconfig.TopologyDhcpv6server
+			if gotV6Servers := intf.ipv6.Dhcpv6server; len(gotV6Servers) > 0 {
+				gotV6Server = gotV6Servers[0]
+			}
+			if diff := jsonCfgDiff(t, test.wantV6Server, gotV6Server); diff != "" {
+				t.Fatalf("addDHCPProtocols: unexpected v6 server config (-want/+got): %s", diff)
 			}
 		})
 	}

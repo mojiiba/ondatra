@@ -16,6 +16,7 @@ syntax = "proto3";
 
 package ondatra;
 
+import "google/protobuf/duration.proto";
 import "google/protobuf/empty.proto";
 
 option go_package = "github.com/openconfig/ondatra/proto";
@@ -47,6 +48,8 @@ message InterfaceConfig {
   ISISConfig isis = 7;
   BgpConfig bgp = 8;
   repeated RsvpConfig rsvps = 12;
+  DhcpV6Client dhcpv6_client = 15;
+  DhcpV6Server dhcpv6_server = 16;
   repeated Network networks = 9;
   bool enable_lacp = 10;
 }
@@ -375,7 +378,11 @@ message BgpPeer {
     Enlp enlp = 13;
   }
   repeated SrtePolicyGroup srte_policy_groups = 9;
-  // NEXT ID: 12
+  google.protobuf.Duration restart_time = 12;
+  google.protobuf.Duration stale_time = 13;
+  bool advertise_end_of_rib = 14;
+  bool act_as_restarted = 15;
+  // NEXT ID: 16
 }
 
 // BGP attributes for advertised prefixes.
@@ -465,6 +472,12 @@ message RsvpConfig {
   bool bundle_message_sending = 4;
   bool refresh_reduction = 5;
   // NEXT ID: 8
+}
+
+message DhcpV6Client {}
+
+message DhcpV6Server {
+  AddressRange lease_addrs = 1;
 }
 
 message Network {
@@ -603,8 +616,10 @@ message Transmission {
 }
 
 message EgressTracking {
-  uint32 custom_offset = 1;
-  uint32 custom_width = 2;
+  bool enabled = 1;
+  uint32 offset = 2;
+  uint32 width = 3;
+  uint32 count = 4;
 }
 
 // A packet header.
@@ -647,7 +662,7 @@ message Ipv4Header {
   bool dont_fragment = 4;
   bool more_fragments = 5;
   uint32 fragment_offset = 6;
-  uint32 ttl = 7;
+  optional uint32 ttl = 7;
   optional uint32 protocol = 8;
   uint32 checksum = 9;
   AddressRange src_addr = 10;
@@ -657,7 +672,7 @@ message Ipv4Header {
 message Ipv6Header {
   AddressRange src_addr = 1;
   AddressRange dst_addr = 2;
-  uint32 hop_limit = 3;
+  optional uint32 hop_limit = 3;
   UIntRange flow_label = 4;
   uint32 dscp = 5;
   uint32 ecn = 6;

@@ -15,22 +15,20 @@
 package ondatra
 
 import (
-	"golang.org/x/net/context"
 	"fmt"
-	"math"
-	"sync"
 	"testing"
 
-	"google.golang.org/grpc"
+	"golang.org/x/net/context"
+
 	"github.com/openconfig/ondatra/binding"
-	"github.com/openconfig/ondatra/internal/ate"
-	"github.com/openconfig/ondatra/internal/gnmigen/genutil"
+	"github.com/openconfig/ondatra/gnmi"
 	"github.com/openconfig/ondatra/internal/testbed"
-	"github.com/openconfig/ondatra/telemetry/device"
 
 	gpb "github.com/openconfig/gnmi/proto/gnmi"
 	opb "github.com/openconfig/ondatra/proto"
 )
+
+var _ gnmi.DeviceOrOpts = (*Device)(nil)
 
 // Device represents a network device.
 type Device struct {
@@ -71,10 +69,14 @@ const (
 	IXIA = Vendor(opb.Device_IXIA)
 	// CIENA vendor.
 	CIENA = Vendor(opb.Device_CIENA)
+	// OPENCONFIG vendor.
+	OPENCONFIG = Vendor(opb.Device_OPENCONFIG)
 	// PALOALTO vendor.
 	PALOALTO = Vendor(opb.Device_PALOALTO)
 	// ZPE vendor.
 	ZPE = Vendor(opb.Device_ZPE)
+	// NOKIA vendor.
+	NOKIA = Vendor(opb.Device_NOKIA)
 )
 
 // String returns the name of the vendor.
@@ -82,12 +84,10 @@ func (v Vendor) String() string {
 	return opb.Device_Vendor(v).String()
 }
 
-// Telemetry returns a telemetry path root for the device.
-func (d *Device) Telemetry() *device.DevicePath {
-	root := device.DeviceRoot(d.Name())
-	// TODO: Add field to root node in ygot instead of using custom data.
-	root.PutCustomData(genutil.DefaultClientKey, d.clientFn)
-	return root
+// GNMIOpts returns a new set of options to customize gNMI queries.
+func (d *Device) GNMIOpts() *gnmi.Opts {
+	useGetForCfg := d.Vendor() == CISCO || d.Vendor() == JUNIPER
+	return gnmi.NewOpts(d.Name(), useGetForCfg, d.clientFn)
 }
 
 // Vendor returns the device vendor.
@@ -134,6 +134,11 @@ func (d *Device) port(id string) (*Port, error) {
 
 func (d *Device) newPort(id string, res *binding.Port) *Port {
 	return &Port{dev: d, id: id, res: res}
+}
+
+// CustomData returns custom data for the specified key.
+func (d *Device) CustomData(key string) any {
+	return d.res.CustomData()[key]
 }
 
 // Port represents a port.
@@ -192,10 +197,62 @@ func (p *Port) CardModel() string {
 type PMD opb.Port_Pmd
 
 const (
-	// PMD100GFR is a PMD of 100G-FR.
-	PMD100GFR = PMD(opb.Port_PMD_100G_FR)
-	// PMD100GLR4 is a PMD of 100G-LR4.
-	PMD100GLR4 = PMD(opb.Port_PMD_100G_LR4)
+	// PMD10GBASELRM is the PMD 10GBASE-LRM
+	PMD10GBASELRM = PMD(opb.Port_PMD_10GBASE_LRM)
+	// PMD10GBASELR is the PMD 10GBASE-LR.
+	PMD10GBASELR = PMD(opb.Port_PMD_10GBASE_LR)
+	// PMD10GBASEZR is the PMD 10GBASE-ZR.
+	PMD10GBASEZR = PMD(opb.Port_PMD_10GBASE_ZR)
+	// PMD10GBASEER is the PMD 10GBASE-ER.
+	PMD10GBASEER = PMD(opb.Port_PMD_10GBASE_ER)
+	// PMD10GBASESR is the PMD 10GBASE-SR.
+	PMD10GBASESR = PMD(opb.Port_PMD_10GBASE_SR)
+	// PMD40GBASECR4 is the PMD 40GBASE-CR4.
+	PMD40GBASECR4 = PMD(opb.Port_PMD_40GBASE_CR4)
+	// PMD40GBASESR4 is the PMD 40GBASE-SR4.
+	PMD40GBASESR4 = PMD(opb.Port_PMD_40GBASE_SR4)
+	// PMD40GBASELR4 is the PMD 40GBASE-LR4.
+	PMD40GBASELR4 = PMD(opb.Port_PMD_40GBASE_LR4)
+	// PMD40GBASEER4 is the PMD 40GBASE-ER4.
+	PMD40GBASEER4 = PMD(opb.Port_PMD_40GBASE_ER4)
+	// PMD40GBASEPSM4 is the PMD 40GBASE-PSM4.
+	PMD40GBASEPSM4 = PMD(opb.Port_PMD_40GBASE_PSM4)
+	// PMD4X10GBASELR is the PMD 4X10GBASE-LR.
+	PMD4X10GBASELR = PMD(opb.Port_PMD_4X10GBASE_LR)
+	// PMD4X10GBASESR is the PMD 4X10GBASE-SR.
+	PMD4X10GBASESR = PMD(opb.Port_PMD_4X10GBASE_SR)
+	// PMD100GAOC is the PMD 100G-AOC.
+	PMD100GAOC = PMD(opb.Port_PMD_100G_AOC)
+	// PMD100GACC is the PMD 100G-ACC.
+	PMD100GACC = PMD(opb.Port_PMD_100G_ACC)
+	// PMD100GBASESR10 is the PMD 100GBASE-SR10.
+	PMD100GBASESR10 = PMD(opb.Port_PMD_100GBASE_SR10)
+	// PMD100GBASESR4 is the PMD 100GBASE-SR4.
+	PMD100GBASESR4 = PMD(opb.Port_PMD_100GBASE_SR4)
+	// PMD100GBASELR4 is the PMD 100GBASE-LR4.
+	PMD100GBASELR4 = PMD(opb.Port_PMD_100GBASE_LR4)
+	// PMD100GBASEER4 is the PMD 100GBASE-ER4.
+	PMD100GBASEER4 = PMD(opb.Port_PMD_100GBASE_ER4)
+	// PMD100GBASECWDM4 is the PMD 100GBASE-CWDM4.
+	PMD100GBASECWDM4 = PMD(opb.Port_PMD_100GBASE_CWDM4)
+	// PMD100GBASECLR4 is the PMD 100GBASE-CLR4.
+	PMD100GBASECLR4 = PMD(opb.Port_PMD_100GBASE_CLR4)
+	// PMD100GBASEPSM4 is the PMD 100GBASE-PSM4.
+	PMD100GBASEPSM4 = PMD(opb.Port_PMD_100GBASE_PSM4)
+	// PMD100GBASECR4 is the PMD 100GBASE-CR4.
+	PMD100GBASECR4 = PMD(opb.Port_PMD_100GBASE_CR4)
+	// PMD100GBASEFR is the PMD 100GBASE-FR.
+	PMD100GBASEFR = PMD(opb.Port_PMD_100GBASE_FR)
+	// PMD400GBASEZR is the PMD 400GBASE-ZR.
+	PMD400GBASEZR = PMD(opb.Port_PMD_400GBASE_ZR)
+	// PMD400GBASELR4 is the PMD 400GBASE-LR4.
+	PMD400GBASELR4 = PMD(opb.Port_PMD_400GBASE_LR4)
+	// PMD400GBASEFR4 is the PMD 400GBASE-FR4.
+	PMD400GBASEFR4 = PMD(opb.Port_PMD_400GBASE_FR4)
+	// PMD400GBASELR8 is the PMD 400GBASE-LR8.
+	PMD400GBASELR8 = PMD(opb.Port_PMD_400GBASE_LR8)
+	// PMD400GBASEDR4 is the PMD 400GBASE-DR4.
+	PMD400GBASEDR4 = PMD(opb.Port_PMD_400GBASE_DR4)
 )
 
 func (pmd PMD) String() string {
@@ -205,44 +262,4 @@ func (pmd PMD) String() string {
 // PMD returns the Physical Medium Dependent.
 func (p *Port) PMD() PMD {
 	return PMD(p.res.PMD)
-}
-
-var (
-	gnmisMu sync.Mutex
-	gnmis   = make(map[binding.Device]gpb.GNMIClient)
-)
-
-// newGNMI creates a new gNMI client for the specified Device.
-func newGNMI(ctx context.Context, dev binding.Device) (gpb.GNMIClient, error) {
-	dialGNMI := func(ctx context.Context, opts ...grpc.DialOption) (gpb.GNMIClient, error) {
-		return dev.(binding.DUT).DialGNMI(ctx, opts...)
-	}
-	if ba, ok := dev.(binding.ATE); ok {
-		dialGNMI = func(ctx context.Context, opts ...grpc.DialOption) (gpb.GNMIClient, error) {
-			return ate.DialGNMI(ctx, ba, opts...)
-		}
-	}
-	return dialGNMI(ctx,
-		grpc.WithBlock(),
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(math.MaxInt32)))
-}
-
-// fetchGNMI fetches the gNMI client for the given device.
-// If a GNMIClient is provided it will be just returned as is and not cached.
-func fetchGNMI(ctx context.Context, dev binding.Device, c gpb.GNMIClient) (gpb.GNMIClient, error) {
-	if c != nil {
-		return c, nil
-	}
-	gnmisMu.Lock()
-	defer gnmisMu.Unlock()
-	c, ok := gnmis[dev]
-	if !ok {
-		var err error
-		c, err = newGNMI(ctx, dev)
-		if err != nil {
-			return nil, err
-		}
-		gnmis[dev] = c
-	}
-	return c, nil
 }

@@ -17,39 +17,430 @@ package solver
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	log "github.com/golang/glog"
-	"github.com/pborman/uuid"
 	"github.com/openconfig/ondatra/binding"
+	"github.com/openconfig/ondatra/binding/portgraph"
+	"github.com/openconfig/ondatra/internal/orderedmap"
+	"github.com/pborman/uuid"
+	"google.golang.org/protobuf/proto"
 
 	tpb "github.com/openconfig/kne/proto/topo"
 	opb "github.com/openconfig/ondatra/proto"
 )
 
+// KNEServiceMapKey is the key to look up the service map in the custom data of a ServiceDUT.
+const KNEServiceMapKey = "$KEY_SERVICE_MAP"
+
 var (
-	ateTypes = map[tpb.Node_Type]bool{
-		tpb.Node_IXIA_TG: true,
+	ateVendors = map[tpb.Vendor]bool{
+		tpb.Vendor_KEYSIGHT: true,
 	}
 
-	// type2VendorMap maps the KNE node type to the Ondatra vendor.
-	type2VendorMap = map[tpb.Node_Type]opb.Device_Vendor{
-		tpb.Node_ARISTA_CEOS: opb.Device_ARISTA,
-		// TODO: when Ondatra supports the OS dimension, use it to
-		// distinguish CSR from CXR and CEVO from VMX.
-		tpb.Node_CISCO_CSR:    opb.Device_CISCO,
-		tpb.Node_CISCO_CXR:    opb.Device_CISCO,
-		tpb.Node_CISCO_E8000:  opb.Device_CISCO,
-		tpb.Node_CISCO_XRD:    opb.Device_CISCO,
-		tpb.Node_IXIA_TG:      opb.Device_IXIA,
-		tpb.Node_JUNIPER_CEVO: opb.Device_JUNIPER,
-		tpb.Node_JUNIPER_VMX:  opb.Device_JUNIPER,
-		tpb.Node_NOKIA_SRL:    opb.Device_NOKIA,
+	deviceVendors = map[tpb.Vendor]opb.Device_Vendor{
+		tpb.Vendor_ARISTA:     opb.Device_ARISTA,
+		tpb.Vendor_CISCO:      opb.Device_CISCO,
+		tpb.Vendor_KEYSIGHT:   opb.Device_IXIA,
+		tpb.Vendor_JUNIPER:    opb.Device_JUNIPER,
+		tpb.Vendor_NOKIA:      opb.Device_NOKIA,
+		tpb.Vendor_OPENCONFIG: opb.Device_OPENCONFIG,
 	}
 )
 
+func filterTopology(topo *tpb.Topology) *tpb.Topology {
+	t := &tpb.Topology{Name: topo.GetName()}
+	for _, node := range topo.GetNodes() {
+		// Only include nodes with known vendor.
+		if _, ok := deviceVendors[node.GetVendor()]; ok {
+			t.Nodes = append(t.Nodes, node)
+		} else {
+			log.Infof("No known device vendor for node %q (vendor %v), ignoring node", node.GetName(), node.GetVendor())
+		}
+	}
+	for _, link := range topo.GetLinks() {
+		foundA := false
+		foundZ := false
+		for _, node := range t.GetNodes() {
+			if link.GetANode() == node.GetName() {
+				foundA = true
+			}
+			if link.GetZNode() == node.GetName() {
+				foundZ = true
+			}
+		}
+		// Only include links with nodes passing filter.
+		if foundA && foundZ {
+			t.Links = append(t.Links, link)
+		}
+	}
+	return t
+}
+
+const (
+	// Attribute names mapping message fields to graph attributes/constraints.
+	vendorAttr = "vendor"
+	hwAttr     = "hardware_model"
+	swAttr     = "software_version"
+	speedAttr  = "speed"
+	cardAttr   = "card_model"
+	pmdAttr    = "pmd"
+	groupAttr  = "group"
+	mtuAttr    = "mtu"
+)
+
+var (
+	reAny = portgraph.Regex(regexp.MustCompile(".*"))
+)
+
+// testbedToAbstractGraph translates an Ondatra testbed to an AbstractGraph for solving.
+func testbedToAbstractGraph(tb *opb.Testbed) (*portgraph.AbstractGraph, map[*portgraph.AbstractNode]*opb.Device, map[*portgraph.AbstractPort]*opb.Port, error) {
+	var nodes []*portgraph.AbstractNode
+	var edges []*portgraph.AbstractEdge
+	name2Port := make(map[string]*portgraph.AbstractPort) // Name of the port to the AbstractPort.
+	node2Dev := make(map[*portgraph.AbstractNode]*opb.Device)
+	port2Port := make(map[*portgraph.AbstractPort]*opb.Port)
+
+	var matchATE string
+	for v := range ateVendors {
+		if matchATE != "" {
+			matchATE += "|"
+		}
+		matchATE += deviceVendors[v].String()
+	}
+	reATE := regexp.MustCompile(matchATE)
+
+	// addDevice creates an AbstractNode from a Device.
+	// If the field is empty, there is not a Constraint on that field.
+	addDevice := func(dev *opb.Device, isATE bool) {
+		nodeConstraints := make(map[string]portgraph.NodeConstraint)
+		if isATE {
+			nodeConstraints[vendorAttr] = portgraph.Regex(reATE)
+		} else {
+			nodeConstraints[vendorAttr] = portgraph.NotRegex(reATE)
+		}
+		if v := dev.GetVendor(); v != opb.Device_VENDOR_UNSPECIFIED {
+			nodeConstraints[vendorAttr] = portgraph.Equal(v.String())
+		}
+		if hw, ok := modelConstraint(dev); ok {
+			nodeConstraints[hwAttr] = hw
+		}
+		if sw, ok := versionConstraint(dev); ok {
+			nodeConstraints[swAttr] = sw
+		}
+		for k, v := range dev.GetExtraDimensions() {
+			nodeConstraints[k] = portgraph.Equal(v)
+		}
+		// Process each port on the device.
+		var ports []*portgraph.AbstractPort
+		group2PortNames := orderedmap.NewOrderedMap[string, []string]()
+		absPortName2DevPort := make(map[string]*opb.Port)
+		for _, port := range dev.GetPorts() {
+			portConstraints := make(map[string]portgraph.PortConstraint)
+			if s := port.GetSpeed(); s != opb.Port_SPEED_UNSPECIFIED {
+				portConstraints[speedAttr] = portgraph.Equal(s.String())
+			}
+			if cm, ok := cardModelConstraint(port); ok {
+				portConstraints[cardAttr] = cm
+			}
+			if pmd, ok := pmdConstraint(port); ok {
+				portConstraints[pmdAttr] = pmd
+			}
+			// Create the AbstractPort, but do not add group constraints until all ports are processed.
+			portName := fmt.Sprintf("%s:%s", dev.GetId(), port.GetId())
+			p := &portgraph.AbstractPort{Desc: portName, Constraints: portConstraints}
+			name2Port[portName] = p
+
+			// Check if the port has a group. If it does, additional constraint(s) need to be added.
+			if port.GetGroup() != "" {
+				pns, _ := group2PortNames.Get(port.GetGroup())
+				group2PortNames.Set(port.GetGroup(), append(pns, portName))
+				absPortName2DevPort[portName] = port
+			} else { // This port is not part of a group; no further processing.
+				port2Port[p] = port
+				ports = append(ports, p)
+			}
+		}
+		processedGroups := map[string]struct{}{}
+		groups := group2PortNames.Keys()
+		for _, group := range groups {
+			portNames, _ := group2PortNames.Get(group)
+			processedGroups[group] = struct{}{}
+			var constraints []portgraph.LeafPortConstraint
+			pn := portNames[0]
+			for _, pn2 := range portNames[1:] {
+				p2 := name2Port[pn2]
+				constraints = append(constraints, portgraph.SameAsPort(p2))
+				name2Port[pn2].Constraints[groupAttr] = reAny
+				port2Port[p2] = absPortName2DevPort[pn2]
+				ports = append(ports, p2)
+			}
+			for _, g2 := range groups {
+				if _, ok := processedGroups[g2]; !ok {
+					p, _ := group2PortNames.Get(g2)
+					constraints = append(constraints, portgraph.NotSameAsPort(name2Port[p[0]]))
+				} else if len(constraints) == 0 {
+					constraints = append(constraints, reAny)
+				}
+			}
+			p := name2Port[pn]
+			if len(constraints) == 1 {
+				p.Constraints[groupAttr] = constraints[0]
+			} else {
+				p.Constraints[groupAttr] = portgraph.AndPort(constraints...)
+			}
+			name2Port[pn] = p
+			ports = append(ports, p)
+			port2Port[p] = absPortName2DevPort[pn]
+		}
+		n := &portgraph.AbstractNode{Desc: dev.GetId(), Constraints: nodeConstraints, Ports: ports}
+		node2Dev[n] = dev
+		nodes = append(nodes, n)
+	}
+
+	for _, dev := range tb.GetDuts() {
+		addDevice(dev, false)
+	}
+	for _, dev := range tb.GetAtes() {
+		addDevice(dev, true)
+	}
+	for _, link := range tb.GetLinks() {
+		src, ok := name2Port[link.GetA()]
+		if !ok {
+			return nil, nil, nil, fmt.Errorf("port %q in links not present in specified testbed", link.GetA())
+		}
+		dst, ok := name2Port[link.GetB()]
+		if !ok {
+			return nil, nil, nil, fmt.Errorf("port %q in links not present in specified testbed", link.GetB())
+		}
+		edges = append(edges, &portgraph.AbstractEdge{Src: src, Dst: dst})
+	}
+	return &portgraph.AbstractGraph{Desc: "KNE testbed", Nodes: nodes, Edges: edges}, node2Dev, port2Port, nil
+}
+
+func modelConstraint(d *opb.Device) (portgraph.NodeConstraint, bool) {
+	switch v := d.GetHardwareModelValue().(type) {
+	case nil:
+		// handled after switch
+	case *opb.Device_HardwareModel:
+		if v.HardwareModel != "" {
+			return portgraph.Equal(v.HardwareModel), true
+		}
+	case *opb.Device_HardwareModelRegex:
+		if v.HardwareModelRegex != "" {
+			return portgraph.Regex(regexp.MustCompile(v.HardwareModelRegex)), true
+		}
+	default:
+		log.Fatalf("unknown hardware model type: %v(%T)", v, v)
+	}
+	return nil, false
+}
+
+func versionConstraint(d *opb.Device) (portgraph.NodeConstraint, bool) {
+	switch v := d.GetSoftwareVersionValue().(type) {
+	case nil:
+		// handled after switch
+	case *opb.Device_SoftwareVersion:
+		if v.SoftwareVersion != "" {
+			return portgraph.Equal(v.SoftwareVersion), true
+		}
+	case *opb.Device_SoftwareVersionRegex:
+		if v.SoftwareVersionRegex != "" {
+			return portgraph.Regex(regexp.MustCompile(v.SoftwareVersionRegex)), true
+		}
+	default:
+		log.Fatalf("unknown software version type: %v(%T)", v, v)
+	}
+	return nil, false
+}
+
+func cardModelConstraint(p *opb.Port) (portgraph.PortConstraint, bool) {
+	switch v := p.GetCardModelValue().(type) {
+	case nil:
+		// handled after switch
+	case *opb.Port_CardModel:
+		if v.CardModel != "" {
+			return portgraph.Equal(v.CardModel), true
+		}
+	case *opb.Port_CardModelRegex:
+		if v.CardModelRegex != "" {
+			return portgraph.Regex(regexp.MustCompile(v.CardModelRegex)), true
+		}
+	default:
+		log.Fatalf("unknown card model type: %v(%T)", v, v)
+	}
+	return nil, false
+}
+
+func pmdConstraint(p *opb.Port) (portgraph.PortConstraint, bool) {
+	switch v := p.GetPmdValue().(type) {
+	case nil:
+		// handled after switch
+	case *opb.Port_Pmd_:
+		if v.Pmd != opb.Port_PMD_UNSPECIFIED {
+			return portgraph.Equal(v.Pmd.String()), true
+		}
+	case *opb.Port_PmdRegex:
+		if v.PmdRegex != "" {
+			return portgraph.Regex(regexp.MustCompile(v.PmdRegex)), true
+		}
+	default:
+		log.Fatalf("unknown PMD type: %v(%T)", v, v)
+	}
+	return nil, false
+}
+
+// topoToConcreteGraph translates a Topology to a ConcreteGraph.
+func topoToConcreteGraph(topo *tpb.Topology) (*portgraph.ConcreteGraph, map[*portgraph.ConcreteNode]*tpb.Node, map[*portgraph.ConcretePort]*intf, error) {
+	var nodes []*portgraph.ConcreteNode
+	var edges []*portgraph.ConcreteEdge
+	nodeName2Node := make(map[string]*portgraph.ConcreteNode)
+	portName2Port := make(map[string]*portgraph.ConcretePort)
+	node2Node := make(map[*portgraph.ConcreteNode]*tpb.Node)
+	port2Intf := make(map[*portgraph.ConcretePort]*intf)
+
+	makePortAndIntf := func(nodeName, intfName, vendorFromNode string, attrs map[string]string) (*portgraph.ConcretePort, *intf) {
+		pn := fmt.Sprintf("%s:%s", nodeName, intfName)
+		p := &portgraph.ConcretePort{Desc: pn, Attrs: attrs}
+		i := &intf{name: intfName}
+		if vendorFromNode != "" {
+			i.vendorName = vendorFromNode
+		} else {
+			i.vendorName = intfName
+		}
+		return p, i
+	}
+	for _, node := range topo.GetNodes() {
+		attrs := make(map[string]string)
+		if vendor, ok := deviceVendors[node.GetVendor()]; ok {
+			attrs[vendorAttr] = vendor.String()
+		}
+		if m := node.GetModel(); m != "" {
+			attrs[hwAttr] = m
+		}
+		if os := node.GetOs(); os != "" {
+			attrs[swAttr] = os
+		}
+		var ports []*portgraph.ConcretePort
+		for intfName, nodeIntf := range node.GetInterfaces() {
+			portAttrs := make(map[string]string)
+			if mtu := nodeIntf.GetMtu(); mtu != 0 {
+				portAttrs[mtuAttr] = strconv.FormatInt(int64(mtu), 10)
+			}
+			if group := nodeIntf.GetGroup(); group != "" {
+				portAttrs[groupAttr] = group
+			}
+			p, i := makePortAndIntf(node.GetName(), intfName, nodeIntf.GetName(), portAttrs)
+			port2Intf[p] = i
+			portName2Port[p.Desc] = p
+			ports = append(ports, p)
+		}
+		n := &portgraph.ConcreteNode{Desc: node.GetName(), Attrs: attrs, Ports: ports}
+		node2Node[n] = node
+		nodeName2Node[n.Desc] = n
+	}
+	createAndAddPort := func(srcNode, srcPort, intfName string) *portgraph.ConcretePort {
+		p := &portgraph.ConcretePort{Desc: srcPort}
+		i := &intf{name: intfName, vendorName: intfName}
+		port2Intf[p] = i
+		portName2Port[srcPort] = p
+		nodeName2Node[srcNode].Ports = append(nodeName2Node[srcNode].Ports, p)
+		return p
+	}
+	for _, link := range topo.GetLinks() {
+		srcName := fmt.Sprintf("%s:%s", link.GetANode(), link.GetAInt())
+		dstName := fmt.Sprintf("%s:%s", link.GetZNode(), link.GetZInt())
+		src, ok := portName2Port[srcName]
+		if !ok {
+			src = createAndAddPort(link.GetANode(), srcName, link.GetAInt())
+		}
+		dst, ok := portName2Port[dstName]
+		if !ok {
+			dst = createAndAddPort(link.GetZNode(), dstName, link.GetZInt())
+		}
+		edges = append(edges, &portgraph.ConcreteEdge{Src: src, Dst: dst})
+	}
+	for _, node := range nodeName2Node {
+		nodes = append(nodes, node)
+	}
+	return &portgraph.ConcreteGraph{Desc: topo.GetName(), Nodes: nodes, Edges: edges}, node2Node, port2Intf, nil
+}
+
+// assignmentToReservation maps the portgraph.Assignment from portgraph.Solve to a reservation proto.
+func assignmentToReservation(
+	assignment *portgraph.Assignment,
+	duts, ates []*opb.Device,
+	absNode2Dev map[*portgraph.AbstractNode]*opb.Device,
+	absPort2Port map[*portgraph.AbstractPort]*opb.Port,
+	conNode2Node map[*portgraph.ConcreteNode]*tpb.Node,
+	conNode2Intf map[*portgraph.ConcretePort]*intf) (*binding.Reservation, error) {
+	dev2Node := make(map[*opb.Device]*tpb.Node)
+	port2Intf := make(map[*opb.Port]*intf)
+	for absNode, conNode := range assignment.Node2Node {
+		dev2Node[absNode2Dev[absNode]] = conNode2Node[conNode]
+	}
+	for absPort, conPort := range assignment.Port2Port {
+		port2Intf[absPort2Port[absPort]] = conNode2Intf[conPort]
+	}
+
+	a := &assign{dev2Node, port2Intf}
+	res := &binding.Reservation{
+		ID:   uuid.New(),
+		DUTs: make(map[string]binding.DUT),
+		ATEs: make(map[string]binding.ATE),
+	}
+	for _, dut := range duts {
+		resDUT, err := a.resolveDUT(dut)
+		if err != nil {
+			return nil, err
+		}
+		res.DUTs[dut.GetId()] = resDUT
+	}
+	for _, ate := range ates {
+		resATE, err := a.resolveATE(ate)
+		if err != nil {
+			return nil, err
+		}
+		res.ATEs[ate.GetId()] = resATE
+	}
+
+	return res, nil
+}
+
+// runtimeProtoCheck checks the proto messages have the expected number of fields.
+func runtimeProtoCheck() error {
+	const (
+		testbedDeviceFields = 8
+		testbedPortFields   = 7
+		topoNodeFields      = 11
+		topoIntfFields      = 7
+	)
+	numFields := func(m proto.Message) int {
+		return m.ProtoReflect().Descriptor().Fields().Len()
+	}
+	if n := numFields((*opb.Device)(nil)); n != testbedDeviceFields {
+		return fmt.Errorf("Ondatra testbed proto Device has %d fields, want %d", n, testbedDeviceFields)
+	}
+	if n := numFields((*opb.Port)(nil)); n != testbedPortFields {
+		return fmt.Errorf("Ondatra testbed proto Port has %d fields, want %d", n, testbedPortFields)
+	}
+	if n := numFields((*tpb.Node)(nil)); n != topoNodeFields {
+		return fmt.Errorf("Ondatra topology proto Node has %d fields, want %d", n, topoNodeFields)
+	}
+	if n := numFields((*tpb.Interface)(nil)); n != topoIntfFields {
+		return fmt.Errorf("Ondatra topology proto Interface has %d fields, want %d", n, topoIntfFields)
+	}
+	return nil
+}
+
 // Solve creates a new Reservation from a desired testbed and an available topology.
 func Solve(tb *opb.Testbed, topo *tpb.Topology) (*binding.Reservation, error) {
+	if err := runtimeProtoCheck(); err != nil {
+		return nil, err
+	}
+	topo = filterTopology(topo)
 	devs := append(append([]*opb.Device{}, tb.GetDuts()...), tb.GetAtes()...)
 	if numDevs, numNodes := len(devs), len(topo.GetNodes()); numDevs > numNodes {
 		return nil, fmt.Errorf("not enough nodes in KNE topology for specified testbed: "+
@@ -59,73 +450,24 @@ func Solve(tb *opb.Testbed, topo *tpb.Topology) (*binding.Reservation, error) {
 		return nil, fmt.Errorf("not enough links in KNE topology for specified testbed "+
 			" testbed has %d links and topology only has %d links", numTBLinks, numTopoLinks)
 	}
-	s := &solver{
-		testbed:    tb,
-		topology:   topo,
-		id2Dev:     make(map[string]*opb.Device),
-		dev2Ports:  make(map[*opb.Device]map[string]*opb.Port),
-		node2Intfs: make(map[*tpb.Node]map[string]*intf),
-		intf2Intf:  make(map[*intf]*intf),
+
+	abstractGraph, absNode2Dev, absPort2Port, err := testbedToAbstractGraph(tb)
+	if err != nil {
+		return nil, fmt.Errorf("could not parse specified testbed: %w", err)
+	}
+	superGraph, conNode2Node, conPort2Intf, err := topoToConcreteGraph(topo)
+	if err != nil {
+		return nil, fmt.Errorf("could not parse specified testbed: %w", err)
 	}
 
-	// Cache various info in the solver about the testbed and topology.
-	for _, dev := range devs {
-		s.id2Dev[dev.GetId()] = dev
-		ports := make(map[string]*opb.Port)
-		for _, port := range dev.GetPorts() {
-			ports[port.GetId()] = port
-		}
-		s.dev2Ports[dev] = ports
-	}
-	name2Node := make(map[string]*tpb.Node)
-	for _, node := range s.topology.GetNodes() {
-		name2Node[node.GetName()] = node
-		s.node2Intfs[node] = make(map[string]*intf)
-	}
-	getIntf := func(nodeName, intfName string) *intf {
-		node := name2Node[nodeName]
-		i, ok := s.node2Intfs[node][intfName]
-		if !ok {
-			i = &intf{name: intfName}
-			s.node2Intfs[node][intfName] = i
-		}
-		i.vendorName = node.Interfaces[intfName].GetName()
-		if i.vendorName == "" {
-			i.vendorName = intfName
-		}
-		return i
-	}
-	for _, link := range s.topology.GetLinks() {
-		intfA := getIntf(link.GetANode(), link.GetAInt())
-		intfZ := getIntf(link.GetZNode(), link.GetZInt())
-		s.intf2Intf[intfA] = intfZ
-		s.intf2Intf[intfZ] = intfA
+	assignment, err := portgraph.Solve(abstractGraph, superGraph)
+	if err != nil {
+		return nil, fmt.Errorf("could not solve for specified testbed: %w", err)
 	}
 
-	a, err := s.solve()
+	res, err := assignmentToReservation(assignment, tb.GetDuts(), tb.GetAtes(), absNode2Dev, absPort2Port, conNode2Node, conPort2Intf)
 	if err != nil {
 		return nil, err
-	}
-
-	res := &binding.Reservation{
-		ID:   uuid.New(),
-		DUTs: make(map[string]binding.DUT),
-		ATEs: make(map[string]binding.ATE),
-	}
-
-	for _, dut := range tb.GetDuts() {
-		resDUT, err := a.resolveDUT(dut)
-		if err != nil {
-			return nil, err
-		}
-		res.DUTs[dut.GetId()] = resDUT
-	}
-	for _, ate := range tb.GetAtes() {
-		resATE, err := a.resolveATE(ate)
-		if err != nil {
-			return nil, err
-		}
-		res.ATEs[ate.GetId()] = resATE
 	}
 	return res, nil
 }
@@ -133,8 +475,9 @@ func Solve(tb *opb.Testbed, topo *tpb.Topology) (*binding.Reservation, error) {
 // ServiceDUT is a DUT that contains a service map.
 type ServiceDUT struct {
 	*binding.AbstractDUT
-	Services map[string]*tpb.Service
-	Cert     *tpb.CertificateCfg
+	Services   map[string]*tpb.Service
+	Cert       *tpb.CertificateCfg
+	NodeVendor tpb.Vendor
 }
 
 // Service returns the KNE service details for a given service name.
@@ -149,8 +492,9 @@ func (d *ServiceDUT) Service(service string) (*tpb.Service, error) {
 // ServiceATE is an ATE that contains a service map.
 type ServiceATE struct {
 	*binding.AbstractATE
-	Services map[string]*tpb.Service
-	Cert     *tpb.CertificateCfg
+	Services   map[string]*tpb.Service
+	Cert       *tpb.CertificateCfg
+	NodeVendor tpb.Vendor
 }
 
 // Service returns the KNE service details for a given service name.
@@ -184,257 +528,66 @@ func (a *assign) String() string {
 }
 
 func (a *assign) resolveDUT(dev *opb.Device) (*ServiceDUT, error) {
-	dims, srvs, cert, err := a.resolveDevice(dev)
+	dr, err := a.resolveDevice(dev)
 	if err != nil {
 		return nil, err
 	}
 	return &ServiceDUT{
-		AbstractDUT: &binding.AbstractDUT{dims},
-		Services:    srvs,
-		Cert:        cert,
+		AbstractDUT: &binding.AbstractDUT{dr.dims},
+		Services:    dr.services,
+		Cert:        dr.cert,
+		NodeVendor:  dr.nodeVendor,
 	}, nil
 }
 
 func (a *assign) resolveATE(dev *opb.Device) (*ServiceATE, error) {
-	dims, srvs, cert, err := a.resolveDevice(dev)
+	dr, err := a.resolveDevice(dev)
 	if err != nil {
 		return nil, err
 	}
 	return &ServiceATE{
-		AbstractATE: &binding.AbstractATE{dims},
-		Services:    srvs,
-		Cert:        cert,
+		AbstractATE: &binding.AbstractATE{dr.dims},
+		Services:    dr.services,
+		Cert:        dr.cert,
+		NodeVendor:  dr.nodeVendor,
 	}, nil
 }
 
-func (a *assign) resolveDevice(dev *opb.Device) (*binding.Dims, map[string]*tpb.Service, *tpb.CertificateCfg, error) {
+type deviceResolution struct {
+	dims       *binding.Dims
+	services   map[string]*tpb.Service
+	cert       *tpb.CertificateCfg
+	nodeVendor tpb.Vendor
+}
+
+func (a *assign) resolveDevice(dev *opb.Device) (*deviceResolution, error) {
 	node, ok := a.dev2Node[dev]
 	if !ok {
-		return nil, nil, nil, fmt.Errorf("node %q not resolved", dev.GetId())
+		return nil, fmt.Errorf("node %q not resolved", dev.GetId())
 	}
-	vendor, ok := type2VendorMap[node.GetType()]
+	vendor, ok := deviceVendors[node.GetVendor()]
 	if !ok {
-		return nil, nil, nil, fmt.Errorf("no known device vendor for node type: %v", node.GetType())
-	}
-	typeName := tpb.Node_Type_name[int32(node.GetType())]
-	dims := &binding.Dims{
-		Name:   node.GetName(),
-		Vendor: vendor,
-		// TODO: Determine appropriate hardware model and software version
-		HardwareModel:   typeName,
-		SoftwareVersion: typeName,
-		Ports:           make(map[string]*binding.Port),
-	}
-	for _, p := range dev.GetPorts() {
-		dims.Ports[p.GetId()] = &binding.Port{Name: a.port2Intf[p].vendorName}
+		return nil, fmt.Errorf("no known device vendor for node %q (vendor %v)", node.GetName(), node.GetVendor())
 	}
 	sm := map[string]*tpb.Service{}
 	for _, s := range node.GetServices() {
 		sm[s.GetName()] = s
 	}
-	return dims, sm, node.GetConfig().GetCert(), nil
-}
-
-type solver struct {
-	testbed    *opb.Testbed
-	topology   *tpb.Topology
-	id2Dev     map[string]*opb.Device
-	dev2Ports  map[*opb.Device]map[string]*opb.Port
-	node2Intfs map[*tpb.Node]map[string]*intf
-	intf2Intf  map[*intf]*intf
-}
-
-func (s *solver) solve() (*assign, error) {
-	// Find all the matching device->node assignments, and
-	// for each of those, all the port->intf assignments.
-	dev2Node2Port2Intfs := make(map[*opb.Device]map[*tpb.Node]map[*opb.Port][]*intf)
-	for _, dut := range s.testbed.GetDuts() {
-		node2Port2Intfs, err := s.nodeMatches(dut, false)
-		if err != nil {
-			return nil, err
-		}
-		dev2Node2Port2Intfs[dut] = node2Port2Intfs
+	dims := &binding.Dims{
+		Name:            node.GetName(),
+		Vendor:          vendor,
+		HardwareModel:   node.GetModel(),
+		SoftwareVersion: node.GetOs(),
+		Ports:           make(map[string]*binding.Port),
+		CustomData:      map[string]any{KNEServiceMapKey: sm},
 	}
-	for _, ate := range s.testbed.GetAtes() {
-		node2Port2Intfs, err := s.nodeMatches(ate, true)
-		if err != nil {
-			return nil, err
-		}
-		dev2Node2Port2Intfs[ate] = node2Port2Intfs
+	for _, p := range dev.GetPorts() {
+		dims.Ports[p.GetId()] = &binding.Port{Name: a.port2Intf[p].vendorName}
 	}
-
-	// Iterate over each of the possible testbed->topology combinations.
-	dev2Nodes := make(map[interface{}][]interface{})
-	for dev, node2Port2Intfs := range dev2Node2Port2Intfs {
-		for node := range node2Port2Intfs {
-			dev2Nodes[dev] = append(dev2Nodes[dev], node)
-		}
-	}
-	dev2NodeChan := genCombos(dev2Nodes)
-	var hasNodeCombo bool
-	for dev2Node := range dev2NodeChan {
-		hasNodeCombo = true
-		port2Intfs := make(map[interface{}][]interface{})
-		for dut, node := range dev2Node {
-			for port, intfs := range dev2Node2Port2Intfs[dut.(*opb.Device)][node.(*tpb.Node)] {
-				for _, i := range intfs {
-					port2Intfs[port] = append(port2Intfs[port], i)
-				}
-			}
-		}
-		port2IntfChan := genCombos(port2Intfs)
-		for port2Intf := range port2IntfChan {
-			if a := newAssign(dev2Node, port2Intf); s.linksMatch(a) {
-				// TODO: When solver is rewritten, signal the gorouting
-				// channel to exit early here and avoid leaving the goroutine hanging.
-				// Not disastrous but ideally the goroutines would terminate here.
-				return a, nil
-			}
-		}
-	}
-	// Give a more specific error message for the case when we didn't need to even
-	// consider the links to determine that there were no matching topologies.
-	if !hasNodeCombo {
-		return nil, fmt.Errorf("no combination of nodes in the KNE topology matches the testbed, irrespective of links")
-	}
-	return nil, fmt.Errorf("no KNE topology matches the testbed")
-}
-
-func (s *solver) nodeMatches(dev *opb.Device, isATE bool) (map[*tpb.Node]map[*opb.Port][]*intf, error) {
-	node2Port2Intfs := make(map[*tpb.Node]map[*opb.Port][]*intf)
-	for _, node := range s.topology.GetNodes() {
-		if isATE != ateTypes[node.GetType()] {
-			continue
-		}
-		match, port2Intfs := s.devMatch(dev, node)
-		if match {
-			log.V(1).Infof("Found match: testbed device %q -> KNE topology node %q", dev.GetId(), node.GetName())
-			node2Port2Intfs[node] = port2Intfs
-		}
-	}
-	if len(node2Port2Intfs) == 0 {
-		return nil, fmt.Errorf("no node in KNE topology to match testbed device %q", dev.GetId())
-	}
-	return node2Port2Intfs, nil
-}
-
-func (s *solver) devMatch(dev *opb.Device, node *tpb.Node) (bool, map[*opb.Port][]*intf) {
-	if dev.GetHardwareModel() != "" && dev.GetHardwareModel() != hardwareModel(node) {
-		return false, nil
-	}
-	if dev.GetSoftwareVersion() != "" && dev.GetSoftwareVersion() != softwareVersion(node) {
-		return false, nil
-	}
-	if v := dev.GetVendor(); v != opb.Device_VENDOR_UNSPECIFIED && v != type2VendorMap[node.GetType()] {
-		return false, nil
-	}
-	log.V(1).Infof("Found node match: %q", dev.GetId())
-	intfs := s.node2Intfs[node]
-	log.V(1).Infof("Interfaces: %v", intfs)
-	// If the device needs more ports than the node, this node cannot match.
-	if len(dev.GetPorts()) > len(intfs) {
-		return false, nil
-	}
-	port2Infs := make(map[*opb.Port][]*intf)
-	for _, port := range dev.GetPorts() {
-		var infs []*intf
-		for _, intf := range intfs {
-			if s.portMatch(port, intf) {
-				log.V(1).Infof("Matched Port: %q %q", port.GetId(), intf.name)
-				infs = append(infs, intf)
-			}
-		}
-		if len(intfs) == 0 {
-			return false, nil
-		}
-		port2Infs[port] = infs
-	}
-	return true, port2Infs
-}
-
-func (s *solver) portMatch(port *opb.Port, intf *intf) bool {
-	// TODO: When solver is rewritten, support more generic port matching.
-	if port.GetSpeed() != opb.Port_SPEED_UNSPECIFIED {
-		return false
-	}
-	return true
-}
-
-func (s *solver) linksMatch(a *assign) bool {
-	getIntf := func(tbLink string) *intf {
-		parts := strings.Split(tbLink, ":")
-		dut := s.id2Dev[parts[0]]
-		port := s.dev2Ports[dut][parts[1]]
-		return a.port2Intf[port]
-	}
-	for _, link := range s.testbed.GetLinks() {
-		intfA := getIntf(link.GetA())
-		intfB := getIntf(link.GetB())
-		if s.intf2Intf[intfA] != intfB {
-			return false
-		}
-	}
-	return true
-}
-
-func hardwareModel(node *tpb.Node) string {
-	return tpb.Node_Type_name[int32(node.GetType())]
-}
-
-func softwareVersion(node *tpb.Node) string {
-	return hardwareModel(node)
-}
-
-// genCombos yields every key->value mapping, where no two keys map to the same
-// value, given a map of keys to their possible values.
-func genCombos(m map[interface{}][]interface{}) <-chan map[interface{}]interface{} {
-	var keys []interface{}
-	for k := range m {
-		keys = append(keys, k)
-	}
-	ch := make(chan map[interface{}]interface{})
-	go func() {
-		defer close(ch)
-		genRecurse(m, keys, make(map[interface{}]interface{}), make(map[interface{}]bool), ch)
-	}()
-	return ch
-}
-
-func genRecurse(
-	m map[interface{}][]interface{},
-	keys []interface{},
-	res map[interface{}]interface{},
-	used map[interface{}]bool,
-	ch chan<- map[interface{}]interface{}) {
-	if len(keys) == 0 {
-		copy := make(map[interface{}]interface{})
-		for k, v := range res {
-			copy[k] = v
-		}
-		ch <- copy
-		return
-	}
-	first := keys[0]
-	for _, i := range m[first] {
-		if !used[i] {
-			res[first] = i
-			used[i] = true
-			genRecurse(m, keys[1:], res, used, ch)
-			delete(used, i)
-		}
-	}
-}
-
-func newAssign(dev2Node, port2Intf map[interface{}]interface{}) *assign {
-	a := &assign{
-		dev2Node:  make(map[*opb.Device]*tpb.Node),
-		port2Intf: make(map[*opb.Port]*intf),
-	}
-	for d, n := range dev2Node {
-		a.dev2Node[d.(*opb.Device)] = n.(*tpb.Node)
-	}
-	for p, i := range port2Intf {
-		a.port2Intf[p.(*opb.Port)] = i.(*intf)
-	}
-	return a
+	return &deviceResolution{
+		dims:       dims,
+		services:   sm,
+		cert:       node.GetConfig().GetCert(),
+		nodeVendor: node.GetVendor(),
+	}, nil
 }

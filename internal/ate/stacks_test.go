@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/openconfig/ondatra/internal/ixconfig"
+	"google.golang.org/protobuf/proto"
 
 	opb "github.com/openconfig/ondatra/proto"
 )
@@ -166,7 +167,7 @@ func TestHeaderStacks(t *testing.T) {
 					DontFragment:   true,
 					MoreFragments:  true,
 					FragmentOffset: 4,
-					Ttl:            ttl,
+					Ttl:            proto.Uint32(ttl),
 					Protocol: func() *uint32 {
 						protocol := uint32(5)
 						return &protocol
@@ -257,7 +258,7 @@ func TestHeaderStacks(t *testing.T) {
 					DstAddr:   &opb.AddressRange{Min: dstIpv6Addr, Max: dstIpv6Addr, Count: 1},
 					FlowLabel: &opb.UIntRange{Min: label, Max: label, Count: 1},
 					Dscp:      1,
-					HopLimit:  hopLimit,
+					HopLimit:  proto.Uint32(hopLimit),
 				},
 			},
 		},
@@ -958,7 +959,7 @@ func TestHeaderStacks(t *testing.T) {
 				t.Fatalf("headerStacks(%v): unexpected stack count %d, wanted %d", test.hdr, len(stacks), len(test.wantFields))
 			}
 			for i, s := range stacks {
-				wantVals, gotVals := make(map[string]interface{}), make(map[string]interface{})
+				wantVals, gotVals := make(map[string]any), make(map[string]any)
 				for _, wf := range test.wantFields[i] {
 					field := wf.toField(s)
 					if wf.wantVal != nil {

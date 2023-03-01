@@ -15,70 +15,53 @@
 package knebind
 
 import (
-	"golang.org/x/net/context"
 	"errors"
-	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
+	"golang.org/x/net/context"
+
 	"github.com/google/go-cmp/cmp"
-	"golang.org/x/crypto/ssh"
-	"google.golang.org/protobuf/testing/protocmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/openconfig/kne/topo/node"
 	"github.com/openconfig/ondatra/binding"
 	"github.com/openconfig/ondatra/knebind/solver"
+	"google.golang.org/protobuf/testing/protocmp"
 
+	cpb "github.com/openconfig/kne/proto/controller"
 	tpb "github.com/openconfig/kne/proto/topo"
 	opb "github.com/openconfig/ondatra/proto"
 )
 
 func TestReserve(t *testing.T) {
-	const topo = `
-		nodes: {
-		  name: "node1"
-      type: ARISTA_CEOS
-      services: {
-        key: 1234
-        value: {
-          name: "gnmi"
-				}
-			}
-			interfaces: {
-			  key: "eth1"
-				value: {
-				  name: "Ethernet1"
-				}
-			}
-    }
-		nodes: {
-		  name: "node2"
-      type: IXIA_TG
-			interfaces: {
-			  key: "eth1"
-				value: {}
-			}
-    }
-		links: {
-		  a_node: "node1"
-		  a_int: "eth1"
-		  z_node: "node2"
-		  z_int: "eth1"
-		}`
-
-	var gotResets int
-	kneCmdFn = func(cfg *Config, args ...string) ([]byte, error) {
-		switch args[1] {
-		case "reset":
-			gotResets++
-			return nil, nil
-		case "service":
-			return []byte(topo), nil
-		default:
-			return nil, fmt.Errorf("unexpected args: %s", args)
-		}
+	top := &tpb.Topology{
+		Nodes: []*tpb.Node{{
+			Name:   "node1",
+			Model:  "ceos",
+			Os:     "eos",
+			Vendor: tpb.Vendor_ARISTA,
+			Services: map[uint32]*tpb.Service{
+				1234: &tpb.Service{Name: "gnmi"},
+			},
+			Interfaces: map[string]*tpb.Interface{
+				"eth1": {Name: "Ethernet1"},
+			},
+		}, {
+			Name:   "node2",
+			Vendor: tpb.Vendor_KEYSIGHT,
+			Interfaces: map[string]*tpb.Interface{
+				"eth1": {},
+			},
+		}},
+		Links: []*tpb.Link{{
+			ANode: "node1",
+			AInt:  "eth1",
+			ZNode: "node2",
+			ZInt:  "eth1",
+		}},
 	}
-
-	bind := &Bind{cfg: &Config{}}
 	tb := &opb.Testbed{
 		Duts: []*opb.Device{{
 			Id:    "dut",
@@ -94,6 +77,8 @@ func TestReserve(t *testing.T) {
 		}},
 	}
 
+	wantDUTServices := map[string]*tpb.Service{"gnmi": &tpb.Service{Name: "gnmi"}}
+	wantATEServices := make(map[string]*tpb.Service)
 	wantRes := &binding.Reservation{
 		DUTs: map[string]binding.DUT{
 			"dut": &kneDUT{
@@ -101,74 +86,208 @@ func TestReserve(t *testing.T) {
 					AbstractDUT: &binding.AbstractDUT{&binding.Dims{
 						Name:            "node1",
 						Vendor:          opb.Device_ARISTA,
-						HardwareModel:   "ARISTA_CEOS",
-						SoftwareVersion: "ARISTA_CEOS",
+						HardwareModel:   "ceos",
+						SoftwareVersion: "eos",
 						Ports: map[string]*binding.Port{
 							"port1": {Name: "Ethernet1"},
 						},
+						CustomData: map[string]any{solver.KNEServiceMapKey: wantDUTServices},
 					}},
-					Services: map[string]*tpb.Service{
-						"gnmi": &tpb.Service{Name: "gnmi"},
-					},
+					Services:   wantDUTServices,
+					NodeVendor: tpb.Vendor_ARISTA,
 				},
-				cfg: bind.cfg,
 			},
 		},
 		ATEs: map[string]binding.ATE{
 			"ate": &kneATE{
 				ServiceATE: &solver.ServiceATE{
 					AbstractATE: &binding.AbstractATE{&binding.Dims{
-						Name:            "node2",
-						Vendor:          opb.Device_IXIA,
-						HardwareModel:   "IXIA_TG",
-						SoftwareVersion: "IXIA_TG",
+						Name:   "node2",
+						Vendor: opb.Device_IXIA,
 						Ports: map[string]*binding.Port{
 							"port1": {Name: "eth1"},
 						},
+						CustomData: map[string]any{solver.KNEServiceMapKey: wantATEServices},
 					}},
-					Services: make(map[string]*tpb.Service),
+					Services:   wantATEServices,
+					NodeVendor: tpb.Vendor_KEYSIGHT,
 				},
-				cfg: bind.cfg,
 			},
 		},
 	}
 
-	gotResets = 0
-	gotRes, err := bind.Reserve(context.Background(), tb, time.Minute, time.Minute, nil)
-	if err != nil {
-		t.Fatalf("Reserve() got error: %v", err)
+	tests := []struct {
+		desc      string
+		skipReset bool
+	}{{
+		desc: "with reset",
+	}, {
+		desc:      "skip reset",
+		skipReset: true,
+	}}
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			tm := &fakeTopoManager{top: top}
+			bind := &Bind{cfg: &Config{}, tm: tm}
+			wantResets := len(wantRes.DUTs)
+			if tt.skipReset {
+				bind.cfg.SkipReset = true
+				wantResets = 0
+			}
+			gotRes, err := bind.Reserve(context.Background(), tb, time.Minute, time.Minute, nil)
+			if err != nil {
+				t.Fatalf("Reserve() got error: %v", err)
+			}
+			if gotRes.ID == "" {
+				t.Errorf("Reserve() got reservation missing ID: %v", gotRes)
+			}
+			if diff := cmp.Diff(wantRes, gotRes, protocmp.Transform(), cmp.AllowUnexported(kneDUT{}, kneATE{}), cmpopts.IgnoreFields(kneDUT{}, "bind"), cmpopts.IgnoreFields(kneATE{}, "bind"), cmpopts.IgnoreFields(binding.Reservation{}, "ID")); diff != "" {
+				t.Errorf("Reserve() got unexpected diff in reservation (-want,+got): %s", diff)
+			}
+			if wantResets != tm.gotResets {
+				t.Errorf("Reserve() got unexpected resets: want %v, got %v", wantResets, tm.gotResets)
+			}
+		})
 	}
-	if gotRes.ID == "" {
-		t.Errorf("Reserve() got reservation missing ID: %v", gotRes)
-	}
-	gotRes.ID = ""
-	if diff := cmp.Diff(wantRes, gotRes, protocmp.Transform(), cmp.AllowUnexported(kneDUT{}, kneATE{})); diff != "" {
-		t.Errorf("Reserve() got unexpected diff in reservation (-want,+got): %s", diff)
-	}
-	if wantResets := len(wantRes.DUTs); wantResets != gotResets {
-		t.Errorf("Reserve() got unexpected DUT resets: want %v, got %v", wantResets, gotResets)
+}
+
+func TestNewRPCCredentials(t *testing.T) {
+	tests := []struct {
+		desc      string
+		cfg       *Config
+		name      string
+		vendor    tpb.Vendor
+		wantCreds *rpcCredentials
+	}{{
+		desc: "nil cfg.Credentials",
+		cfg: &Config{
+			Username: "user",
+			Password: "pass",
+		},
+		name:      "r1",
+		vendor:    tpb.Vendor_ARISTA,
+		wantCreds: &rpcCredentials{username: "user", password: "pass"},
+	}, {
+		desc: "nil cfg.Credentials.Node",
+		cfg: &Config{
+			Username: "user",
+			Password: "pass",
+			Credentials: &Credentials{
+				Vendor: map[tpb.Vendor]*UserPass{},
+			},
+		},
+		name:      "r1",
+		vendor:    tpb.Vendor_ARISTA,
+		wantCreds: &rpcCredentials{username: "user", password: "pass"},
+	}, {
+		desc: "nil cfg.Credentials.Vendor",
+		cfg: &Config{
+			Username: "user",
+			Password: "pass",
+			Credentials: &Credentials{
+				Node: map[string]*UserPass{},
+			},
+		},
+		name:      "r1",
+		vendor:    tpb.Vendor_ARISTA,
+		wantCreds: &rpcCredentials{username: "user", password: "pass"},
+	}, {
+		desc: "node only",
+		cfg: &Config{
+			Username: "user",
+			Password: "pass",
+			Credentials: &Credentials{
+				Node: map[string]*UserPass{
+					"r1": &UserPass{Username: "nodeUser", Password: "nodePass"},
+				},
+			},
+		},
+		name:      "r1",
+		vendor:    tpb.Vendor_ARISTA,
+		wantCreds: &rpcCredentials{username: "nodeUser", password: "nodePass"},
+	}, {
+		desc: "vendor only",
+		cfg: &Config{
+			Username: "user",
+			Password: "pass",
+			Credentials: &Credentials{
+				Vendor: map[tpb.Vendor]*UserPass{
+					tpb.Vendor_ARISTA: &UserPass{Username: "vendorUser", Password: "vendorPass"},
+				},
+			},
+		},
+		name:      "r1",
+		vendor:    tpb.Vendor_ARISTA,
+		wantCreds: &rpcCredentials{username: "vendorUser", password: "vendorPass"},
+	}, {
+		desc: "node and vendor",
+		cfg: &Config{
+			Username: "user",
+			Password: "pass",
+			Credentials: &Credentials{
+				Node: map[string]*UserPass{
+					"r1": &UserPass{Username: "nodeUser", Password: "nodePass"},
+				},
+				Vendor: map[tpb.Vendor]*UserPass{
+					tpb.Vendor_ARISTA: &UserPass{Username: "vendorUser", Password: "vendorPass"},
+				},
+			},
+		},
+		name:      "r1",
+		vendor:    tpb.Vendor_ARISTA,
+		wantCreds: &rpcCredentials{username: "nodeUser", password: "nodePass"},
+	}, {
+		desc: "no match",
+		cfg: &Config{
+			Username: "user",
+			Password: "pass",
+			Credentials: &Credentials{
+				Node: map[string]*UserPass{
+					"r1": &UserPass{Username: "nodeUser", Password: "nodePass"},
+				},
+				Vendor: map[tpb.Vendor]*UserPass{
+					tpb.Vendor_ARISTA: &UserPass{Username: "vendorUser", Password: "vendorPass"},
+				},
+			},
+		},
+		name:      "r2",
+		vendor:    tpb.Vendor_CISCO,
+		wantCreds: &rpcCredentials{username: "user", password: "pass"},
+	}}
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			dut := &kneDUT{
+				ServiceDUT: &solver.ServiceDUT{
+					AbstractDUT: &binding.AbstractDUT{&binding.Dims{Name: tt.name}},
+					NodeVendor:  tt.vendor,
+				},
+				bind: &Bind{cfg: tt.cfg},
+			}
+			gotCreds := dut.newRPCCredentials()
+			if diff := cmp.Diff(tt.wantCreds, gotCreds, cmp.AllowUnexported(rpcCredentials{})); diff != "" {
+				t.Errorf("newRPCCredentials() got unexpected diff (-want,+got): %s", diff)
+			}
+		})
 	}
 }
 
 func TestServices(t *testing.T) {
-	bind := &Bind{cfg: &Config{}}
-
 	tests := []struct {
 		desc         string
 		tb           *opb.Testbed
-		topo         string
+		topo         *tpb.Topology
 		serviceCheck func(t *testing.T, b binding.Binding, d binding.DUT)
 	}{{
 		desc: "missing gnmi",
 		tb: &opb.Testbed{
 			Duts: []*opb.Device{{Id: "dut1"}},
 		},
-		topo: `
-		  nodes: {
-		    name: "node1"
-        type: ARISTA_CEOS
-		  }
-		`,
+		topo: &tpb.Topology{
+			Nodes: []*tpb.Node{{
+				Name:   "node1",
+				Vendor: tpb.Vendor_ARISTA,
+			}},
+		},
 		serviceCheck: func(t *testing.T, b binding.Binding, d binding.DUT) {
 			t.Helper()
 			if _, err := d.DialGNMI(context.Background()); err == nil {
@@ -180,12 +299,12 @@ func TestServices(t *testing.T) {
 		tb: &opb.Testbed{
 			Duts: []*opb.Device{{Id: "dut1"}},
 		},
-		topo: `
-		  nodes: {
-		    name: "node1"
-        type: ARISTA_CEOS
-		  }
-		`,
+		topo: &tpb.Topology{
+			Nodes: []*tpb.Node{{
+				Name:   "node1",
+				Vendor: tpb.Vendor_ARISTA,
+			}},
+		},
 		serviceCheck: func(t *testing.T, b binding.Binding, d binding.DUT) {
 			t.Helper()
 			if _, err := d.DialGRIBI(context.Background()); err == nil {
@@ -199,20 +318,19 @@ func TestServices(t *testing.T) {
 				Id: "dut1",
 			}},
 		},
-		topo: `
-		  nodes: {
-		    name: "node1"
-        type: CISCO_CXR
-				services {
-				  key: 9339
-					value {
-					  name: "gnmi"
-						outside: 9339
-						outside_ip: "1.1.1.1"
-					}
-				}
-		  }
-		`,
+		topo: &tpb.Topology{
+			Nodes: []*tpb.Node{{
+				Name:   "node1",
+				Vendor: tpb.Vendor_CISCO,
+				Services: map[uint32]*tpb.Service{
+					9339: &tpb.Service{
+						Name:      "gnmi",
+						Outside:   9339,
+						OutsideIp: "1.1.1.1",
+					},
+				},
+			}},
+		},
 		serviceCheck: func(t *testing.T, b binding.Binding, d binding.DUT) {
 			t.Helper()
 			if _, err := d.DialP4RT(context.Background()); err == nil {
@@ -226,36 +344,29 @@ func TestServices(t *testing.T) {
 				Id: "dut1",
 			}},
 		},
-		topo: `
-		  nodes: {
-		    name: "node1"
-        type: CISCO_CXR
-				services {
-				  key: 9336
-					value {
-					  name: "p4rt"
-						outside: 9336
-						outside_ip: "1.1.1.1"
-					}
-				}
-				services {
-				  key: 9339
-					value {
-					  name: "gnmi"
-						outside: 9339
-						outside_ip: "1.1.1.1"
-					}
-				}
-				services {
-				  key: 4242
-					value {
-					  name: "gribi"
-						outside: 4242
-						outside_ip: "1.1.1.1"
-					}
-				}
-		  }
-		`,
+		topo: &tpb.Topology{
+			Nodes: []*tpb.Node{{
+				Name:   "node1",
+				Vendor: tpb.Vendor_CISCO,
+				Services: map[uint32]*tpb.Service{
+					9336: &tpb.Service{
+						Name:      "p4rt",
+						Outside:   9336,
+						OutsideIp: "1.1.1.1",
+					},
+					9339: &tpb.Service{
+						Name:      "gnmi",
+						Outside:   9339,
+						OutsideIp: "1.1.1.1",
+					},
+					4242: &tpb.Service{
+						Name:      "gribi",
+						Outside:   4242,
+						OutsideIp: "1.1.1.1",
+					},
+				},
+			}},
+		},
 		serviceCheck: func(t *testing.T, b binding.Binding, d binding.DUT) {
 			t.Helper()
 			if _, err := d.DialGNMI(context.Background()); err != nil {
@@ -271,8 +382,9 @@ func TestServices(t *testing.T) {
 	}}
 	for _, tt := range tests {
 		t.Run(tt.desc, func(t *testing.T) {
-			kneCmdFn = func(cfg *Config, args ...string) ([]byte, error) {
-				return []byte(tt.topo), nil
+			bind := &Bind{
+				cfg: &Config{},
+				tm:  &fakeTopoManager{top: tt.topo},
 			}
 			res, err := bind.Reserve(context.Background(), tt.tb, time.Minute, time.Minute, nil)
 			if err != nil {
@@ -289,73 +401,91 @@ func TestServices(t *testing.T) {
 
 func TestPushConfig(t *testing.T) {
 	const dutName = "dut"
-	var sshErr error
-	sshExecFn = func(addr string, cfg *ssh.ClientConfig, cmd string) (_ string, rerr error) {
-		return "", sshErr
-	}
-	var gotReset bool
-	kneCmdFn = func(cfg *Config, args ...string) ([]byte, error) {
-		for _, a := range args {
-			if a == "reset" {
-				gotReset = true
-			}
-		}
-		return nil, nil
+	top := &tpb.Topology{
+		Nodes: []*tpb.Node{{
+			Name:   dutName,
+			Config: &tpb.Config{ConfigData: &tpb.Config_Data{[]byte("init")}},
+		}},
 	}
 
 	tests := []struct {
 		desc      string
-		vendor    opb.Device_Vendor
 		reset     bool
-		sshErr    error
-		noSSH     bool
+		resetErr  error
+		pushErr   error
 		wantReset bool
 		wantErr   string
 	}{{
-		desc:   "success",
-		vendor: opb.Device_ARISTA,
+		desc: "success",
 	}, {
 		desc:      "reset success",
-		vendor:    opb.Device_ARISTA,
 		reset:     true,
 		wantReset: true,
 	}, {
-		desc:    "only arista support",
-		vendor:  opb.Device_CISCO,
-		wantErr: "supports Arista",
+		desc:     "reset error",
+		reset:    true,
+		resetErr: errors.New("reset error"),
+		wantErr:  "reset error",
 	}, {
-		desc:    "ssh error",
-		vendor:  opb.Device_ARISTA,
-		sshErr:  errors.New("ssh error"),
-		wantErr: "ssh error",
-	}, {
-		desc:    "no ssh",
-		vendor:  opb.Device_ARISTA,
-		noSSH:   true,
-		wantErr: "\"ssh\" not found",
+		desc:    "push error",
+		pushErr: errors.New("push error"),
+		wantErr: "push error",
 	}}
 	for _, tt := range tests {
 		t.Run(tt.desc, func(t *testing.T) {
-			sshErr = tt.sshErr
-			gotReset = false
+			tm := &fakeTopoManager{top: top, resetErr: tt.resetErr, pushErr: tt.pushErr}
 			dut := &kneDUT{
 				ServiceDUT: &solver.ServiceDUT{
-					AbstractDUT: &binding.AbstractDUT{&binding.Dims{Name: dutName, Vendor: tt.vendor}},
+					AbstractDUT: &binding.AbstractDUT{&binding.Dims{Name: dutName}},
 				},
-				cfg: &Config{},
-			}
-			if !tt.noSSH {
-				dut.Services = map[string]*tpb.Service{
-					"ssh": &tpb.Service{OutsideIp: "1.2.3.4", Outside: 1234},
-				}
+				bind: &Bind{tm: tm, cfg: &Config{}},
 			}
 			err := dut.PushConfig(context.Background(), "my config", tt.reset)
 			if (err == nil) != (tt.wantErr == "") || (err != nil && !strings.Contains(err.Error(), tt.wantErr)) {
 				t.Errorf("PushConfig got error %v, want %v", err, tt.wantErr)
 			}
-			if gotReset != tt.wantReset {
+			if gotReset := tm.gotResets > 0; gotReset != tt.wantReset {
 				t.Errorf("PushConfig got reset %v, want %v", gotReset, tt.wantReset)
 			}
 		})
 	}
+}
+
+type fakeTopoManager struct {
+	top       *tpb.Topology
+	gotResets int
+	resetErr  error
+	pushErr   error
+}
+
+func (m *fakeTopoManager) Nodes() map[string]node.Node {
+	nodes := make(map[string]node.Node)
+	for _, npb := range m.top.GetNodes() {
+		nodes[npb.GetName()] = &fakeNode{npb: npb}
+	}
+	return nodes
+}
+
+func (m *fakeTopoManager) Show(context.Context) (*cpb.ShowTopologyResponse, error) {
+	return &cpb.ShowTopologyResponse{Topology: m.top}, nil
+}
+
+func (m *fakeTopoManager) ConfigPush(context.Context, string, io.Reader) error {
+	return m.pushErr
+}
+
+func (m *fakeTopoManager) ResetCfg(context.Context, string) error {
+	if m.resetErr == nil {
+		m.gotResets++
+	}
+	return m.resetErr
+}
+
+type fakeNode struct {
+	node.Node
+	npb *tpb.Node
+}
+
+func (n *fakeNode) GetProto() *tpb.Node {
+	return n.npb
 }

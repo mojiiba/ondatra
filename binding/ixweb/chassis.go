@@ -15,8 +15,9 @@
 package ixweb
 
 import (
-	"golang.org/x/net/context"
 	"path"
+
+	"golang.org/x/net/context"
 )
 
 // Chassis represents the chassis management application on Ixia Web Platform.
@@ -29,7 +30,7 @@ func (c *Chassis) absPath(relPath string) string {
 }
 
 // Get submits a GET request, at a relative path to the chassis API.
-func (c *Chassis) Get(ctx context.Context, path string, out interface{}) error {
+func (c *Chassis) Get(ctx context.Context, path string, out any) error {
 	return c.ixweb.jsonReq(ctx, get, c.absPath(path), nil, out)
 }
 
@@ -39,11 +40,11 @@ func (c *Chassis) Delete(ctx context.Context, path string) error {
 }
 
 // Patch submits a PATCH request, at a relative path to the chassis API.
-func (c *Chassis) Patch(ctx context.Context, path string, in interface{}) error {
+func (c *Chassis) Patch(ctx context.Context, path string, in any) error {
 	return c.ixweb.jsonReq(ctx, patch, c.absPath(path), in, nil)
 }
 
 // Post submits a POST request, at a relative path to the chassis API.
-func (c *Chassis) Post(ctx context.Context, path string, in, out interface{}) error {
+func (c *Chassis) Post(ctx context.Context, path string, in, out any) error {
 	return c.ixweb.jsonReq(ctx, post, c.absPath(path), in, out)
 }

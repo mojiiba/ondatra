@@ -15,14 +15,15 @@
 package ondatra
 
 import (
-	"golang.org/x/net/context"
 	"fmt"
 	"testing"
+
+	"golang.org/x/net/context"
 
 	log "github.com/golang/glog"
 	"github.com/openconfig/ondatra/binding"
 	"github.com/openconfig/ondatra/internal/ate"
-	"github.com/openconfig/ondatra/internal/debugger"
+	"github.com/openconfig/ondatra/internal/events"
 
 	opb "github.com/openconfig/ondatra/proto"
 )
@@ -37,9 +38,10 @@ func (tr *Traffic) String() string {
 }
 
 // NewFlow returns a new Traffic flow. By default the flow will have the following properties:
-//   frame size: max(64, sizeof(headers) + (4 * number of ethernet headers))
-//   frame rate: 10% of the line rate
-//   header addresses inferred: true
+//
+//	frame size: max(64, sizeof(headers) + (4 * number of ethernet headers))
+//	frame rate: 10% of the line rate
+//	header addresses inferred: true
 func (tr *Traffic) NewFlow(name string) *Flow {
 	return &Flow{pb: &opb.Flow{Name: name}}
 }
@@ -48,7 +50,7 @@ func (tr *Traffic) NewFlow(name string) *Flow {
 // If no flows are provided, starts the previously pushed flows.
 func (tr *Traffic) Start(t testing.TB, flows ...*Flow) {
 	t.Helper()
-	debugger.ActionStarted(t, "Starting traffic on %s", tr.ate)
+	t = events.ActionStarted(t, "Starting traffic on %s", tr.ate)
 	if err := tr.start(flows); err != nil {
 		t.Fatalf("Start(t) on %s: %v", tr, err)
 	}
@@ -67,7 +69,7 @@ func (tr *Traffic) start(flows []*Flow) error {
 // Frame size can only be updated to a frame size of the same type.
 func (tr *Traffic) Update(t testing.TB, flows ...*Flow) {
 	t.Helper()
-	debugger.ActionStarted(t, "Updating traffic on %s", tr.ate)
+	t = events.ActionStarted(t, "Updating traffic on %s", tr.ate)
 	if err := tr.update(flows); err != nil {
 		t.Fatalf("Update(t) on %s: %v", tr, err)
 	}
@@ -84,7 +86,7 @@ func (tr *Traffic) update(flows []*Flow) error {
 // Stop stops all traffic flows on the ATE.
 func (tr *Traffic) Stop(t testing.TB) {
 	t.Helper()
-	debugger.ActionStarted(t, "Stopping traffic on %s", tr.ate)
+	t = events.ActionStarted(t, "Stopping traffic on %s", tr.ate)
 	if err := ate.StopTraffic(context.Background(), tr.ate); err != nil {
 		t.Fatalf("Stop(t) on %s: %v", tr, err)
 	}
@@ -177,16 +179,51 @@ func (f *Flow) WithFrameRateBPS(n uint64) *Flow {
 	return f
 }
 
-// WithEgressTrackingEnabled enables egress tracking with custom offset and width bits.
-func (f *Flow) WithEgressTrackingEnabled(customOffset, customWidth uint32) *Flow {
-	f.pb.EgressTracking = &opb.EgressTracking{CustomOffset: customOffset, CustomWidth: customWidth}
-	return f
+// EgressTracking represents the egress tracking configuration of a flow.
+type EgressTracking struct {
+	pb *opb.EgressTracking
 }
 
-// WithEgressTrackingDisabled disables egress tracking.
-func (f *Flow) WithEgressTrackingDisabled() *Flow {
-	f.pb.EgressTracking = nil
-	return f
+// EgressTracking returns the egress tracking configuration of the flow.
+// By default the configuration has the following properties:
+// enabled: true
+// offset: 32
+// width: 3
+// count: 8
+func (f *Flow) EgressTracking() *EgressTracking {
+	if f.pb.EgressTracking == nil {
+		f.pb.EgressTracking = &opb.EgressTracking{
+			Enabled: true,
+			Offset:  32,
+			Width:   3,
+			Count:   8,
+		}
+	}
+	return &EgressTracking{f.pb.EgressTracking}
+}
+
+// WithEnabled sets whether egress tracking is enabled.
+func (et *EgressTracking) WithEnabled(enabled bool) *EgressTracking {
+	et.pb.Enabled = enabled
+	return et
+}
+
+// WithOffset sets the egress tracking bit offset.
+func (et *EgressTracking) WithOffset(offset uint32) *EgressTracking {
+	et.pb.Offset = offset
+	return et
+}
+
+// WithWidth sets the egress tracking bit width.
+func (et *EgressTracking) WithWidth(width uint32) *EgressTracking {
+	et.pb.Width = width
+	return et
+}
+
+// WithCount sets the number of unique values to egress track.
+func (et *EgressTracking) WithCount(count uint32) *EgressTracking {
+	et.pb.Count = count
+	return et
 }
 
 // WithIngressTrackingByPorts enables ingress tracking by rx/tx ports.

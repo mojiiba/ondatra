@@ -24,7 +24,7 @@ func NewIP(pb *opb.IpConfig) *IP {
 	return &IP{pb}
 }
 
-// IP is an representation of IP config on the ATE.
+// IP is a representation of IP config on the ATE.
 type IP struct {
 	pb *opb.IpConfig
 }

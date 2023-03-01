@@ -16,14 +16,15 @@
 package fakebind
 
 import (
-	"golang.org/x/net/context"
 	"time"
 
+	"golang.org/x/net/context"
+
 	log "github.com/golang/glog"
-	"google.golang.org/grpc"
 	"github.com/open-traffic-generator/snappi/gosnappi"
 	"github.com/openconfig/ondatra/binding"
 	"github.com/openconfig/ondatra/internal/testbed"
+	"google.golang.org/grpc"
 
 	gpb "github.com/openconfig/gnmi/proto/gnmi"
 	grpb "github.com/openconfig/gribi/v1/proto/service"
@@ -31,15 +32,15 @@ import (
 	p4pb "github.com/p4lang/p4runtime/go/p4/v1"
 )
 
-// Setup creates and initializes Ondatra with a new fake binding and returns
-// that fake binding for further stubbing.
+// Setup initializes Ondatra with a new fake binding, initializes the testbed
+// to an unreserved state, and returns the fake binding for further stubbing.
 func Setup() *Binding {
 	bind := new(Binding)
 	testbed.SetBinding(bind)
-	return bind
+	return bind.WithReservation(nil)
 }
 
-var _ binding.Binding = new(Binding)
+var _ binding.Binding = (*Binding)(nil)
 
 // Binding is a fake binding.Binding implementation comprised of stubs.
 type Binding struct {
@@ -48,18 +49,12 @@ type Binding struct {
 	FetchReservationFn func(context.Context, string) (*binding.Reservation, error)
 }
 
-// StubReservation sets b.ReserveFn and b.FetchReservationFn to functions that
-// return the specified reservation and sets b.ReleaseFn to a noop.
-func (b *Binding) StubReservation(res *binding.Reservation) *Binding {
-	b.ReserveFn = func(context.Context, *opb.Testbed, time.Duration, time.Duration, map[string]string) (*binding.Reservation, error) {
-		return res, nil
-	}
-	b.FetchReservationFn = func(context.Context, string) (*binding.Reservation, error) {
-		return res, nil
-	}
-	b.ReleaseFn = func(context.Context) error {
-		return nil
-	}
+// WithReservation sets Ondatra to a state in which the specified reservation
+// has been reserved. It does not alter the implementation of this binding's
+// stub functions in any way. If a nil reservation is supplied, Ondatra is set
+// to an unreserved state.
+func (b *Binding) WithReservation(res *binding.Reservation) *Binding {
+	testbed.SetReservationForTesting(res)
 	return b
 }
 
@@ -87,16 +82,18 @@ func (b *Binding) FetchReservation(ctx context.Context, id string) (*binding.Res
 	return b.FetchReservationFn(ctx, id)
 }
 
+var _ binding.DUT = (*DUT)(nil)
+
 // DUT is a fake implementation of binding.DUT comprised of stubs.
 type DUT struct {
 	*binding.AbstractDUT
 	PushConfigFn  func(context.Context, string, bool) error
-	DialCLIFn     func(context.Context, ...grpc.DialOption) (binding.StreamClient, error)
-	DialConsoleFn func(context.Context, ...grpc.DialOption) (binding.StreamClient, error)
+	DialCLIFn     func(context.Context) (binding.StreamClient, error)
+	DialConsoleFn func(context.Context) (binding.StreamClient, error)
 	DialGNMIFn    func(context.Context, ...grpc.DialOption) (gpb.GNMIClient, error)
 	DialGNOIFn    func(context.Context, ...grpc.DialOption) (binding.GNOIClients, error)
-	DialGRIBIFn func(context.Context, ...grpc.DialOption) (grpb.GRIBIClient, error)
-	DialP4RTFn  func(context.Context, ...grpc.DialOption) (p4pb.P4RuntimeClient, error)
+	DialGRIBIFn   func(context.Context, ...grpc.DialOption) (grpb.GRIBIClient, error)
+	DialP4RTFn    func(context.Context, ...grpc.DialOption) (p4pb.P4RuntimeClient, error)
 }
 
 // PushConfig delegates to d.PushConfigFn.
@@ -108,19 +105,19 @@ func (d *DUT) PushConfig(ctx context.Context, config string, reset bool) error {
 }
 
 // DialCLI delegates to d.DialCLIFn.
-func (d *DUT) DialCLI(ctx context.Context, opts ...grpc.DialOption) (binding.StreamClient, error) {
+func (d *DUT) DialCLI(ctx context.Context) (binding.StreamClient, error) {
 	if d.DialCLIFn == nil {
 		log.Fatal("fakebind DialCLI called but DialCLIFn not set")
 	}
-	return d.DialCLIFn(ctx, opts...)
+	return d.DialCLIFn(ctx)
 }
 
 // DialConsole delegates to d.DialConsoleFn.
-func (d *DUT) DialConsole(ctx context.Context, opts ...grpc.DialOption) (binding.StreamClient, error) {
+func (d *DUT) DialConsole(ctx context.Context) (binding.StreamClient, error) {
 	if d.DialConsoleFn == nil {
 		log.Fatal("fakebind DialConsole called but DialConsoleFn not set")
 	}
-	return d.DialConsoleFn(ctx, opts...)
+	return d.DialConsoleFn(ctx)
 }
 
 // DialGNMI delegates to d.DialGNMIFn.
@@ -155,12 +152,14 @@ func (d *DUT) DialP4RT(ctx context.Context, opts ...grpc.DialOption) (p4pb.P4Run
 	return d.DialP4RTFn(ctx, opts...)
 }
 
+var _ binding.ATE = (*ATE)(nil)
+
 // ATE is a fake implementation of binding.ATE comprised of stubs.
 type ATE struct {
 	*binding.AbstractATE
 	DialIxNetworkFn func(context.Context) (*binding.IxNetwork, error)
 	DialGNMIFn      func(context.Context, ...grpc.DialOption) (gpb.GNMIClient, error)
-	DialOTGFn       func(context.Context) (gosnappi.GosnappiApi, error)
+	DialOTGFn       func(context.Context, ...grpc.DialOption) (gosnappi.GosnappiApi, error)
 }
 
 // DialIxNetwork delegates to a.DialIxNetworkFn.
@@ -180,9 +179,9 @@ func (a *ATE) DialGNMI(ctx context.Context, opts ...grpc.DialOption) (gpb.GNMICl
 }
 
 // DialOTG delegates to a.DialOTGFn.
-func (a *ATE) DialOTG(ctx context.Context) (gosnappi.GosnappiApi, error) {
+func (a *ATE) DialOTG(ctx context.Context, opts ...grpc.DialOption) (gosnappi.GosnappiApi, error) {
 	if a.DialOTGFn == nil {
 		log.Fatal("fakebind DialOTG called but DialOTGFn not set")
 	}
-	return a.DialOTGFn(ctx)
+	return a.DialOTGFn(ctx, opts...)
 }

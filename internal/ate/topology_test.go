@@ -26,7 +26,6 @@ import (
 
 func TestAddPorts(t *testing.T) {
 	const (
-		ixiaName            = "ixia1"
 		chassisHost         = "192.168.1.1"
 		portInstrumentation = "floating"
 		firstPort           = "1/1"
@@ -34,7 +33,7 @@ func TestAddPorts(t *testing.T) {
 	)
 	wantCfg := &ixconfig.Ixnetwork{
 		Vport: []*ixconfig.Vport{{
-			Name:     ixconfig.String(fmt.Sprintf("%s/1/1", ixiaName)),
+			Name:     ixconfig.String("1/1"),
 			Location: ixconfig.String(fmt.Sprintf("%s;1;1", chassisHost)),
 			L1Config: &ixconfig.VportL1Config{
 				AresOneFourHundredGigLan: &ixconfig.VportL1ConfigAresOneFourHundredGigLan{
@@ -55,7 +54,7 @@ func TestAddPorts(t *testing.T) {
 				},
 			},
 		}, {
-			Name:     ixconfig.String(fmt.Sprintf("%s/2/2", ixiaName)),
+			Name:     ixconfig.String("2/2"),
 			Location: ixconfig.String(fmt.Sprintf("%s;2;2", chassisHost)),
 			L1Config: &ixconfig.VportL1Config{
 				AresOneFourHundredGigLan: &ixconfig.VportL1ConfigAresOneFourHundredGigLan{
@@ -79,10 +78,8 @@ func TestAddPorts(t *testing.T) {
 	}
 
 	c := &ixATE{
-		name:        ixiaName,
 		chassisHost: chassisHost,
 		cfg:         &ixconfig.Ixnetwork{},
-		vportToPort: make(map[*ixconfig.Vport]string),
 		ports:       make(map[string]*ixconfig.Vport),
 	}
 
@@ -146,11 +143,11 @@ func TestAddPortsErrors(t *testing.T) {
 
 func TestAddLAGs(t *testing.T) {
 	vport1 := &ixconfig.Vport{
-		Name:     ixconfig.String("ixia1/1/1"),
+		Name:     ixconfig.String("1/1"),
 		Location: ixconfig.String("192.168.1.1;1;1"),
 	}
 	vport2 := &ixconfig.Vport{
-		Name:     ixconfig.String("ixia1/2/2"),
+		Name:     ixconfig.String("2/2"),
 		Location: ixconfig.String("192.168.1.1;2;2"),
 	}
 
@@ -296,7 +293,28 @@ func TestAddTopologies(t *testing.T) {
 		ifs                  []*opb.InterfaceConfig
 		wantDg, wantNestedDg string
 		wantLink             ixconfig.IxiaCfgNode
+		wantErr              string
 	}{{
+		desc: "Port does not exist",
+		ifs: []*opb.InterfaceConfig{{
+			Name:     ifName,
+			Link:     &opb.InterfaceConfig_Port{"invalid"},
+			Ethernet: &opb.EthernetConfig{Mtu: 1500},
+		}},
+		wantDg:   fmt.Sprintf("Device Group on %s", ifName),
+		wantLink: vport,
+		wantErr:  "no ATE port configured",
+	}, {
+		desc: "LAG does not exist",
+		ifs: []*opb.InterfaceConfig{{
+			Name:     ifName,
+			Link:     &opb.InterfaceConfig_Lag{"invalid"},
+			Ethernet: &opb.EthernetConfig{Mtu: 1500},
+		}},
+		wantDg:   fmt.Sprintf("Device Group on %s", ifName),
+		wantLink: vport,
+		wantErr:  "no ATE LAG configured",
+	}, {
 		desc: "No LAG",
 		ifs: []*opb.InterfaceConfig{{
 			Name:     ifName,
@@ -329,7 +347,13 @@ func TestAddTopologies(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.desc, func(t *testing.T) {
 			c := emptyCfgClient()
-			c.addTopology(test.ifs)
+			gotErr := c.addTopology(test.ifs)
+			if (gotErr == nil) != (test.wantErr == "") || (gotErr != nil && !strings.Contains(gotErr.Error(), test.wantErr)) {
+				t.Errorf("addTopology: got err: %v, want err %q", gotErr, test.wantErr)
+			}
+			if gotErr != nil {
+				return
+			}
 
 			var gotDg, gotNestedDg string
 			dg := c.cfg.Topology[0].DeviceGroup[0]

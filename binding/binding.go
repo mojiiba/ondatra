@@ -16,14 +16,15 @@
 package binding
 
 import (
-	"golang.org/x/net/context"
 	"fmt"
 	"io"
 	"time"
 
-	"google.golang.org/grpc"
+	"golang.org/x/net/context"
+
 	"github.com/open-traffic-generator/snappi/gosnappi"
 	"github.com/openconfig/ondatra/binding/ixweb"
+	"google.golang.org/grpc"
 
 	gpb "github.com/openconfig/gnmi/proto/gnmi"
 	bpb "github.com/openconfig/gnoi/bgp"
@@ -37,12 +38,12 @@ import (
 	mpb "github.com/openconfig/gnoi/mpls"
 	ospb "github.com/openconfig/gnoi/os"
 	otpb "github.com/openconfig/gnoi/otdr"
+	plqpb "github.com/openconfig/gnoi/packet_link_qualification"
 	spb "github.com/openconfig/gnoi/system"
 	wpb "github.com/openconfig/gnoi/wavelength_router"
 	grpb "github.com/openconfig/gribi/v1/proto/service"
 	opb "github.com/openconfig/ondatra/proto"
 	p4pb "github.com/p4lang/p4runtime/go/p4/v1"
-
 )
 
 // Binding is a strategy interface for Ondatra vendor implementations.
@@ -100,6 +101,7 @@ type Device interface {
 	HardwareModel() string
 	SoftwareVersion() string
 	Ports() map[string]*Port
+	CustomData() map[string]any
 }
 
 // Dims contains the dimensions of reserved DUT or ATE.
@@ -109,6 +111,7 @@ type Dims struct {
 	HardwareModel   string
 	SoftwareVersion string
 	Ports           map[string]*Port
+	CustomData      map[string]any
 }
 
 func (d *Dims) String() string {
@@ -128,12 +131,10 @@ type DUT interface {
 	PushConfig(ctx context.Context, config string, reset bool) error
 
 	// DialCLI creates a client connection to the DUT's CLI endpoint.
-	// Implementations must append transport security options necessary to reach the server.
-	DialCLI(context.Context, ...grpc.DialOption) (StreamClient, error)
+	DialCLI(context.Context) (StreamClient, error)
 
 	// DialConsole creates a client connection to the DUT's Console endpoint.
-	// Implementations must append transport security options necessary to reach the server.
-	DialConsole(context.Context, ...grpc.DialOption) (StreamClient, error)
+	DialConsole(context.Context) (StreamClient, error)
 
 	// DialGNMI creates a client connection to the DUT's gNMI endpoint.
 	// Implementations must append transport security options necessary to reach the server.
@@ -169,7 +170,8 @@ type ATE interface {
 	DialGNMI(context.Context, ...grpc.DialOption) (gpb.GNMIClient, error)
 
 	// DialOTG creates a client connection to the ATE's OTG endpoint.
-	DialOTG(context.Context) (gosnappi.GosnappiApi, error)
+	// Implementations must append transport security options necessary to reach the server.
+	DialOTG(context.Context, ...grpc.DialOption) (gosnappi.GosnappiApi, error)
 
 	mustEmbedAbstractATE()
 }
@@ -209,6 +211,7 @@ type GNOIClients interface {
 	Healthz() hpb.HealthzClient
 	Interface() ipb.InterfaceClient
 	Layer2() lpb.Layer2Client
+	LinkQualification() plqpb.LinkQualificationClient
 	MPLS() mpb.MPLSClient
 	OS() ospb.OSClient
 	OTDR() otpb.OTDRClient

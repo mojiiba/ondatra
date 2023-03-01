@@ -15,13 +15,14 @@
 package ondatra
 
 import (
-	"golang.org/x/net/context"
 	"fmt"
 	"testing"
 
+	"golang.org/x/net/context"
+
 	"github.com/openconfig/ondatra/binding"
 	"github.com/openconfig/ondatra/internal/ate"
-	"github.com/openconfig/ondatra/internal/debugger"
+	"github.com/openconfig/ondatra/internal/events"
 
 	opb "github.com/openconfig/ondatra/proto"
 )
@@ -96,7 +97,7 @@ func (at *ATETopology) AddLAG(name string) *LAG {
 // Currently running protocols will stop.
 func (at *ATETopology) Push(t testing.TB) *ATETopology {
 	t.Helper()
-	debugger.ActionStarted(t, "Pushing topology to %s", at.ate)
+	t = events.ActionStarted(t, "Pushing topology to %s", at.ate)
 	if err := ate.PushTopology(context.Background(), at.ate, at.top); err != nil {
 		t.Fatalf("Push(t) on %s: %v", at, err)
 	}
@@ -107,7 +108,7 @@ func (at *ATETopology) Push(t testing.TB) *ATETopology {
 // Currently running protocols will continue running.
 func (at *ATETopology) Update(t testing.TB) {
 	t.Helper()
-	debugger.ActionStarted(t, "Updating topology to %s", at.ate)
+	t = events.ActionStarted(t, "Updating topology to %s", at.ate)
 	if err := ate.UpdateTopology(context.Background(), at.ate, at.top, false); err != nil {
 		t.Fatalf("Update(t) on %s: %v", at, err)
 	}
@@ -115,7 +116,7 @@ func (at *ATETopology) Update(t testing.TB) {
 
 // UpdateBGPPeerStates is equivalent to Update() but only updates the BGP peer state.
 // This is provided as a temporary workaround for the high overhead of Update().
-// TODO: Remove this method once new Ixia config binding is used.
+// TODO(team): Remove this method once new Ixia config binding is used.
 func (at *ATETopology) UpdateBGPPeerStates(t testing.TB) {
 	t.Helper()
 	if err := ate.UpdateTopology(context.Background(), at.ate, at.top, true); err != nil {
@@ -134,7 +135,7 @@ func (at *ATETopology) UpdateNetworks(t testing.TB) {
 // StartProtocols starts the control plane protocols on the ATE.
 func (at *ATETopology) StartProtocols(t testing.TB) *ATETopology {
 	t.Helper()
-	debugger.ActionStarted(t, "Starting protocols on %s", at.ate)
+	t = events.ActionStarted(t, "Starting protocols on %s", at.ate)
 	if err := ate.StartProtocols(context.Background(), at.ate); err != nil {
 		t.Fatalf("StartProtocols(t) on %s: %v", at, err)
 	}
@@ -144,7 +145,7 @@ func (at *ATETopology) StartProtocols(t testing.TB) *ATETopology {
 // StopProtocols stops the control plane protocols on the ATE.
 func (at *ATETopology) StopProtocols(t testing.TB) *ATETopology {
 	t.Helper()
-	debugger.ActionStarted(t, "Stopping protocols to %s", at.ate)
+	t = events.ActionStarted(t, "Stopping protocols to %s", at.ate)
 	if err := ate.StopProtocols(context.Background(), at.ate); err != nil {
 		t.Fatalf("StopProtocols(t) on %s: %v", at, err)
 	}

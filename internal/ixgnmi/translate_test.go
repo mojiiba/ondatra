@@ -18,11 +18,11 @@ import (
 	"fmt"
 	"testing"
 
-	"google.golang.org/protobuf/encoding/prototext"
-	"github.com/openconfig/ygot/ygot"
 	"github.com/openconfig/gnmi/errdiff"
 	"github.com/openconfig/ondatra/binding/ixweb"
-	"github.com/openconfig/ondatra/telemetry"
+	"github.com/openconfig/ondatra/gnmi/oc"
+	"github.com/openconfig/ygot/ygot"
+	"google.golang.org/protobuf/encoding/prototext"
 
 	gpb "github.com/openconfig/gnmi/proto/gnmi"
 )
@@ -38,30 +38,30 @@ func TestTranslate(t *testing.T) {
 	tests := []struct {
 		name             string
 		tables           map[string]ixweb.StatTable
-		want             *telemetry.Device
+		want             *oc.Root
 		wantErrSubstring string
 	}{{
 		name: "single view, success",
 		tables: map[string]ixweb.StatTable{
 			portCPUStatsCaption: {{
-				"Port Name":        "ixia2/port1",
+				"Port Name":        "port1",
 				"Total Memory(KB)": "420",
 				"Free Memory(KB)":  "100",
 				"%CPU Load":        "100",
 			}},
 		},
-		want: func() *telemetry.Device {
-			d := &telemetry.Device{}
+		want: func() *oc.Root {
+			d := &oc.Root{}
 			p := d.GetOrCreateComponent("port1")
 			c := d.GetOrCreateComponent("port1_CPU")
 
-			p.Type = telemetry.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_PORT
-			c.Type = telemetry.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_CPU
+			p.Type = oc.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_PORT
+			c.Type = oc.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_CPU
 
 			p.GetOrCreateSubcomponent("port1_CPU")
 			c.Parent = ygot.String("port1")
 
-			p.Memory = &telemetry.Component_Memory{
+			p.Memory = &oc.Component_Memory{
 				Available: ygot.Uint64(100),
 				Utilized:  ygot.Uint64(320),
 			}
@@ -74,20 +74,20 @@ func TestTranslate(t *testing.T) {
 		name: "one valid and one unknown view, success",
 		tables: map[string]ixweb.StatTable{
 			portCPUStatsCaption: {{
-				"Port Name": "ixia2/port1",
+				"Port Name": "port1",
 				"%CPU Load": "100",
 			}},
 			"Some Unknown View": {{
 				"Colour": "burnt-umber",
 			}},
 		},
-		want: func() *telemetry.Device {
-			d := &telemetry.Device{}
+		want: func() *oc.Root {
+			d := &oc.Root{}
 			p := d.GetOrCreateComponent("port1")
 			c := d.GetOrCreateComponent("port1_CPU")
 
-			p.Type = telemetry.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_PORT
-			c.Type = telemetry.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_CPU
+			p.Type = oc.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_PORT
+			c.Type = oc.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_CPU
 
 			p.GetOrCreateSubcomponent("port1_CPU")
 			c.Parent = ygot.String("port1")
@@ -107,30 +107,30 @@ func TestTranslate(t *testing.T) {
 		name: "multiple stats",
 		tables: map[string]ixweb.StatTable{
 			portCPUStatsCaption: {{
-				"Port Name": "ixia2/port1",
+				"Port Name": "port1",
 				"%CPU Load": "100",
 			}},
 			portStatsCaption: {{
-				"Port Name": "ixia2/port1",
+				"Port Name": "port1",
 				"Bytes Rx.": "10",
 				"Bytes Tx.": "20",
 			}},
 		},
-		want: func() *telemetry.Device {
-			d := &telemetry.Device{}
+		want: func() *oc.Root {
+			d := &oc.Root{}
 			p := d.GetOrCreateComponent("port1")
-			p.Type = telemetry.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_PORT
+			p.Type = oc.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_PORT
 			p.GetOrCreateSubcomponent("port1_CPU")
 
 			c := d.GetOrCreateComponent("port1_CPU")
-			c.Type = telemetry.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_CPU
-			c.GetOrCreateCpu().Utilization = &telemetry.Component_Cpu_Utilization{
+			c.Type = oc.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_CPU
+			c.GetOrCreateCpu().Utilization = &oc.Component_Cpu_Utilization{
 				Instant: ygot.Uint8(100),
 			}
 			c.Parent = ygot.String("port1")
 
 			i := d.GetOrCreateInterface("port1")
-			i.Type = telemetry.IETFInterfaces_InterfaceType_ethernetCsmacd
+			i.Type = oc.IETFInterfaces_InterfaceType_ethernetCsmacd
 			ic := i.GetOrCreateCounters()
 			ic.InOctets = ygot.Uint64(10)
 			ic.OutOctets = ygot.Uint64(20)
@@ -162,20 +162,20 @@ func TestTranslatePortCPUStats(t *testing.T) {
 	tests := []struct {
 		name             string
 		table            ixweb.StatTable
-		want             *telemetry.Device
+		want             *oc.Root
 		wantErrSubstring string
 	}{{
 		name: "complete single component mapping",
 		table: ixweb.StatTable{{
-			"Port Name":        "ixia2/port1",
+			"Port Name":        "port1",
 			"Total Memory(KB)": "42",
 			"Free Memory(KB)":  "21",
 			"%CPU Load":        "100",
 		}},
-		want: func() *telemetry.Device {
-			s := &telemetry.Device{}
+		want: func() *oc.Root {
+			s := &oc.Root{}
 			p := s.GetOrCreateComponent("port1")
-			p.Type = telemetry.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_PORT
+			p.Type = oc.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_PORT
 			p.NewSubcomponent("port1_CPU")
 
 			m := p.GetOrCreateMemory()
@@ -184,7 +184,7 @@ func TestTranslatePortCPUStats(t *testing.T) {
 
 			c := s.GetOrCreateComponent("port1_CPU")
 			c.Parent = ygot.String("port1")
-			c.Type = telemetry.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_CPU
+			c.Type = oc.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_CPU
 			c.GetOrCreateCpu().GetOrCreateUtilization().Instant = ygot.Uint8(uint8(100))
 
 			return s
@@ -192,19 +192,19 @@ func TestTranslatePortCPUStats(t *testing.T) {
 	}, {
 		name: "partial component mapping",
 		table: ixweb.StatTable{{
-			"Port Name": "ixia2/port2",
+			"Port Name": "port2",
 			"%CPU Load": "42",
 		}},
-		want: func() *telemetry.Device {
-			s := &telemetry.Device{}
+		want: func() *oc.Root {
+			s := &oc.Root{}
 
 			p := s.GetOrCreateComponent("port2")
-			p.Type = telemetry.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_PORT
+			p.Type = oc.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_PORT
 			p.NewSubcomponent("port2_CPU")
 
 			c := s.GetOrCreateComponent("port2_CPU")
 			c.Parent = ygot.String("port2")
-			c.Type = telemetry.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_CPU
+			c.Type = oc.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_CPU
 			c.GetOrCreateCpu().GetOrCreateUtilization().Instant = ygot.Uint8(uint8(42))
 
 			return s
@@ -212,14 +212,14 @@ func TestTranslatePortCPUStats(t *testing.T) {
 	}, {
 		name: "multiple components",
 		table: ixweb.StatTable{{
-			"Port Name": "ixia2/port1",
+			"Port Name": "port1",
 			"%CPU Load": "1",
 		}, {
-			"Port Name": "ixia2/port2",
+			"Port Name": "port2",
 			"%CPU Load": "2",
 		}},
-		want: func() *telemetry.Device {
-			s := &telemetry.Device{}
+		want: func() *oc.Root {
+			s := &oc.Root{}
 
 			for _, ep := range []struct {
 				name string
@@ -229,12 +229,12 @@ func TestTranslatePortCPUStats(t *testing.T) {
 				{name: "port2", load: 2},
 			} {
 				p := s.GetOrCreateComponent(ep.name)
-				p.Type = telemetry.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_PORT
+				p.Type = oc.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_PORT
 				p.NewSubcomponent(fmt.Sprintf("%s_CPU", ep.name))
 
 				c := s.GetOrCreateComponent(fmt.Sprintf("%s_CPU", ep.name))
 				c.Parent = ygot.String(ep.name)
-				c.Type = telemetry.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_CPU
+				c.Type = oc.PlatformTypes_OPENCONFIG_HARDWARE_COMPONENT_CPU
 				c.GetOrCreateCpu().GetOrCreateUtilization().Instant = ygot.Uint8(ep.load)
 			}
 
@@ -246,12 +246,6 @@ func TestTranslatePortCPUStats(t *testing.T) {
 			"%CPU Load": "42",
 		}},
 		wantErrSubstring: "required key",
-	}, {
-		name: "invalid port name",
-		table: ixweb.StatTable{{
-			"Port Name": "port2",
-		}},
-		wantErrSubstring: "invalid port name",
 	}, {
 		name: "invalid total memory",
 		table: ixweb.StatTable{{
@@ -302,12 +296,12 @@ func TestTranslatePortStats(t *testing.T) {
 	tests := []struct {
 		name             string
 		table            ixweb.StatTable
-		want             *telemetry.Device
+		want             *oc.Root
 		wantErrSubstring string
 	}{{
 		name: "single port statistics",
 		table: ixweb.StatTable{{
-			"Port Name":        "ixia2/port1",
+			"Port Name":        "port1",
 			"Valid Frames Rx.": "10",
 			"Frames Tx.":       "20",
 			"Bytes Rx.":        "30",
@@ -316,10 +310,10 @@ func TestTranslatePortStats(t *testing.T) {
 			"Rx. Rate (bps)":   "2048",
 			"CRC Errors":       "42",
 		}},
-		want: func() *telemetry.Device {
-			d := &telemetry.Device{}
+		want: func() *oc.Root {
+			d := &oc.Root{}
 			i := d.GetOrCreateInterface("port1")
-			i.Counters = &telemetry.Interface_Counters{
+			i.Counters = &oc.Interface_Counters{
 				InOctets:  ygot.Uint64(30),
 				InPkts:    ygot.Uint64(10),
 				OutOctets: ygot.Uint64(40),
@@ -330,30 +324,30 @@ func TestTranslatePortStats(t *testing.T) {
 
 			i.InRate = float32Bytes(2048.0)
 			i.OutRate = float32Bytes(1024.0)
-			i.Type = telemetry.IETFInterfaces_InterfaceType_ethernetCsmacd
+			i.Type = oc.IETFInterfaces_InterfaceType_ethernetCsmacd
 			return d
 
 		}(),
 	}, {
 		name: "two ports statistics",
 		table: ixweb.StatTable{{
-			"Port Name": "ixia2/port1",
+			"Port Name": "port1",
 			"Bytes Rx.": "10",
 			"Bytes Tx.": "20",
 		}, {
-			"Port Name": "ixia2/port2",
+			"Port Name": "port2",
 			"Bytes Rx.": "100",
 			"Bytes Tx.": "200",
 		}},
-		want: func() *telemetry.Device {
-			d := &telemetry.Device{}
+		want: func() *oc.Root {
+			d := &oc.Root{}
 			for intf, counters := range map[string][]uint64{
 				"port1": []uint64{10, 20},
 				"port2": []uint64{100, 200},
 			} {
 				i := d.GetOrCreateInterface(intf)
-				i.Type = telemetry.IETFInterfaces_InterfaceType_ethernetCsmacd
-				i.Counters = &telemetry.Interface_Counters{
+				i.Type = oc.IETFInterfaces_InterfaceType_ethernetCsmacd
+				i.Counters = &oc.Interface_Counters{
 					InOctets:  ygot.Uint64(counters[0]),
 					OutOctets: ygot.Uint64(counters[1]),
 				}
@@ -364,59 +358,53 @@ func TestTranslatePortStats(t *testing.T) {
 	}, {
 		name: "single interface oper status up",
 		table: ixweb.StatTable{{
-			"Port Name":  "ixia2/p4",
+			"Port Name":  "p4",
 			"Link State": "Link Up",
 		}},
-		want: func() *telemetry.Device {
-			d := &telemetry.Device{}
+		want: func() *oc.Root {
+			d := &oc.Root{}
 			i := d.GetOrCreateInterface("p4")
-			i.OperStatus = telemetry.Interface_OperStatus_UP
-			i.Type = telemetry.IETFInterfaces_InterfaceType_ethernetCsmacd
+			i.OperStatus = oc.Interface_OperStatus_UP
+			i.Type = oc.IETFInterfaces_InterfaceType_ethernetCsmacd
 			return d
 		}(),
 	}, {
 		name: "single interface link down",
 		table: ixweb.StatTable{{
-			"Port Name":  "ixia2/p5",
+			"Port Name":  "p5",
 			"Link State": "Link Down",
 		}},
-		want: func() *telemetry.Device {
-			d := &telemetry.Device{}
+		want: func() *oc.Root {
+			d := &oc.Root{}
 			i := d.GetOrCreateInterface("p5")
-			i.OperStatus = telemetry.Interface_OperStatus_DOWN
-			i.Type = telemetry.IETFInterfaces_InterfaceType_ethernetCsmacd
+			i.OperStatus = oc.Interface_OperStatus_DOWN
+			i.Type = oc.IETFInterfaces_InterfaceType_ethernetCsmacd
 			return d
 		}(),
 	}, {
 		name: "single interface no pcs lock",
 		table: ixweb.StatTable{{
-			"Port Name":  "ixia2/p5",
+			"Port Name":  "p5",
 			"Link State": "No PCS Lock",
 		}},
-		want: func() *telemetry.Device {
-			d := &telemetry.Device{}
+		want: func() *oc.Root {
+			d := &oc.Root{}
 			i := d.GetOrCreateInterface("p5")
-			i.OperStatus = telemetry.Interface_OperStatus_DOWN
-			i.Type = telemetry.IETFInterfaces_InterfaceType_ethernetCsmacd
+			i.OperStatus = oc.Interface_OperStatus_DOWN
+			i.Type = oc.IETFInterfaces_InterfaceType_ethernetCsmacd
 			return d
 		}(),
 	}, {
-		name: "invalid port name",
-		table: ixweb.StatTable{{
-			"Port Name": "port2",
-		}},
-		wantErrSubstring: "invalid port name",
-	}, {
 		name: "invalid input for uint64 statistic",
 		table: ixweb.StatTable{{
-			"Port Name": "ixia2/port42",
+			"Port Name": "port42",
 			"Bytes Rx.": "four hundred and ninety seven",
 		}},
 		wantErrSubstring: "Bytes Rx.",
 	}, {
 		name: "invalid input for float32 statistic",
 		table: ixweb.StatTable{{
-			"Port Name":      "ixia2/port48",
+			"Port Name":      "port48",
 			"Tx. Rate (bps)": "one point eight gigabits per second",
 		}},
 		wantErrSubstring: "Tx. Rate (bps)",
@@ -429,7 +417,7 @@ func TestTranslatePortStats(t *testing.T) {
 	}, {
 		name: "invalid port status",
 		table: ixweb.StatTable{{
-			"Port Name":  "ixia2/port42",
+			"Port Name":  "port42",
 			"Link State": "Unmappable Value",
 		}},
 		wantErrSubstring: "unmappable port link state",
@@ -461,7 +449,7 @@ func TestTranslateTrafficItemStats(t *testing.T) {
 		name             string
 		table            ixweb.StatTable
 		itFlows          []string
-		want             *telemetry.Device
+		want             *oc.Root
 		wantErrSubstring string
 	}{{
 		name: "single flow statistics",
@@ -476,10 +464,10 @@ func TestTranslateTrafficItemStats(t *testing.T) {
 			"Tx Frame Rate": "2",
 			"Tx Rate (bps)": "2048",
 		}},
-		want: func() *telemetry.Device {
-			d := &telemetry.Device{}
+		want: func() *oc.Root {
+			d := &oc.Root{}
 			f := d.GetOrCreateFlow("traffic1")
-			f.Counters = &telemetry.Flow_Counters{
+			f.Counters = &oc.Flow_Counters{
 				InOctets: ygot.Uint64(100),
 				InPkts:   ygot.Uint64(10),
 				OutPkts:  ygot.Uint64(20),
@@ -538,7 +526,7 @@ func TestTranslateFlowStats(t *testing.T) {
 	tests := []struct {
 		name             string
 		table            ixweb.StatTable
-		want             *telemetry.Device
+		want             *oc.Root
 		wantErrSubstring string
 	}{{
 		name: "single flow statistics - ingress tracking disabled",
@@ -555,11 +543,11 @@ func TestTranslateFlowStats(t *testing.T) {
 			"Rx Port":       "port1",
 			"Tx Port":       "Eth1",
 		}},
-		want: func() *telemetry.Device {
-			d := &telemetry.Device{}
+		want: func() *oc.Root {
+			d := &oc.Root{}
 			f := d.GetOrCreateFlow("traffic1")
-			it := f.GetOrCreateIngressTracking("Eth1", "port1", telemetry.MplsTypes_MplsLabel_Enum_NO_LABEL, "", "", "", "", 0)
-			it.Counters = &telemetry.Flow_IngressTracking_Counters{
+			it := f.GetOrCreateIngressTracking("Eth1", "port1", oc.IngressTracking_MplsLabel_NO_LABEL, "", "", "", "", 0)
+			it.Counters = &oc.Flow_IngressTracking_Counters{
 				InOctets: ygot.Uint64(100),
 				InPkts:   ygot.Uint64(10),
 				OutPkts:  ygot.Uint64(20),
@@ -595,11 +583,11 @@ func TestTranslateFlowStats(t *testing.T) {
 			"IPv4 :Precedence":          "3",
 			"VLAN:VLAN-ID":              "1",
 		}},
-		want: func() *telemetry.Device {
-			d := &telemetry.Device{}
+		want: func() *oc.Root {
+			d := &oc.Root{}
 			f := d.GetOrCreateFlow("traffic1")
-			it := f.GetOrCreateIngressTracking("Eth1", "port1", telemetry.MplsTypes_MplsLabel_Enum_IPV4_EXPLICIT_NULL, "1.1.1.1", "2.2.2.2", "1::", "EE::", 1)
-			it.Counters = &telemetry.Flow_IngressTracking_Counters{
+			it := f.GetOrCreateIngressTracking("Eth1", "port1", oc.IngressTracking_MplsLabel_IPV4_EXPLICIT_NULL, "1.1.1.1", "2.2.2.2", "1::", "EE::", 1)
+			it.Counters = &oc.Flow_IngressTracking_Counters{
 				InOctets: ygot.Uint64(100),
 				InPkts:   ygot.Uint64(10),
 				OutPkts:  ygot.Uint64(20),
@@ -659,7 +647,7 @@ func TestTranslateEgressStats(t *testing.T) {
 		name             string
 		table            ixweb.StatTable
 		itFlows          []string
-		want             *telemetry.Device
+		want             *oc.Root
 		wantErrSubstring string
 	}{{
 		name: "single flow",
@@ -676,12 +664,12 @@ func TestTranslateEgressStats(t *testing.T) {
 			"Tx Frame Rate":   "2",
 			"Tx Rate (bps)":   "2048",
 		}},
-		want: func() *telemetry.Device {
-			d := &telemetry.Device{}
+		want: func() *oc.Root {
+			d := &oc.Root{}
 			f := d.GetOrCreateFlow("traffic1")
 			f.Filter = ygot.String("MyFilter")
 			et := f.GetOrCreateEgressTracking("1")
-			et.Counters = &telemetry.Flow_EgressTracking_Counters{
+			et.Counters = &oc.Flow_EgressTracking_Counters{
 				InOctets: ygot.Uint64(100),
 				InPkts:   ygot.Uint64(10),
 				OutPkts:  ygot.Uint64(20),
@@ -763,13 +751,13 @@ func TestTranslateEgressStats(t *testing.T) {
 			"Tx Rate (bps)":   "5120",
 		}},
 		itFlows: []string{"traffic1"},
-		want: func() *telemetry.Device {
-			d := &telemetry.Device{}
+		want: func() *oc.Root {
+			d := &oc.Root{}
 			f := d.GetOrCreateFlow("traffic1")
-			it := f.GetOrCreateIngressTracking("Eth1", "port1", telemetry.MplsTypes_MplsLabel_Enum_IPV4_EXPLICIT_NULL, "1.1.1.1", "2.2.2.2", "1::", "EE::", 1)
+			it := f.GetOrCreateIngressTracking("Eth1", "port1", oc.IngressTracking_MplsLabel_IPV4_EXPLICIT_NULL, "1.1.1.1", "2.2.2.2", "1::", "EE::", 1)
 			it.Filter = ygot.String("Custom: (8 bits at offset 184)")
 			et := it.GetOrCreateEgressTracking("1")
-			et.Counters = &telemetry.Flow_IngressTracking_EgressTracking_Counters{
+			et.Counters = &oc.Flow_IngressTracking_EgressTracking_Counters{
 				InOctets: ygot.Uint64(100),
 				InPkts:   ygot.Uint64(10),
 				OutPkts:  ygot.Uint64(20),
@@ -780,7 +768,7 @@ func TestTranslateEgressStats(t *testing.T) {
 			et.InRate = float32Bytes(1024)
 			et.OutRate = float32Bytes(2048)
 			et = it.GetOrCreateEgressTracking("2")
-			et.Counters = &telemetry.Flow_IngressTracking_EgressTracking_Counters{
+			et.Counters = &oc.Flow_IngressTracking_EgressTracking_Counters{
 				InOctets: ygot.Uint64(200),
 				InPkts:   ygot.Uint64(20),
 				OutPkts:  ygot.Uint64(30),
@@ -790,10 +778,10 @@ func TestTranslateEgressStats(t *testing.T) {
 			et.OutFrameRate = float32Bytes(3)
 			et.InRate = float32Bytes(2048)
 			et.OutRate = float32Bytes(3072)
-			it = f.GetOrCreateIngressTracking("Eth1", "port1", telemetry.MplsTypes_MplsLabel_Enum_IPV4_EXPLICIT_NULL, "1.1.1.1", "2.2.2.2", "1::", "EE::", 2)
+			it = f.GetOrCreateIngressTracking("Eth1", "port1", oc.IngressTracking_MplsLabel_IPV4_EXPLICIT_NULL, "1.1.1.1", "2.2.2.2", "1::", "EE::", 2)
 			it.Filter = ygot.String("Custom: (8 bits at offset 184)")
 			et = it.GetOrCreateEgressTracking("3")
-			et.Counters = &telemetry.Flow_IngressTracking_EgressTracking_Counters{
+			et.Counters = &oc.Flow_IngressTracking_EgressTracking_Counters{
 				InOctets: ygot.Uint64(300),
 				InPkts:   ygot.Uint64(30),
 				OutPkts:  ygot.Uint64(40),
@@ -804,7 +792,7 @@ func TestTranslateEgressStats(t *testing.T) {
 			et.InRate = float32Bytes(3072)
 			et.OutRate = float32Bytes(4096)
 			et = it.GetOrCreateEgressTracking("4")
-			et.Counters = &telemetry.Flow_IngressTracking_EgressTracking_Counters{
+			et.Counters = &oc.Flow_IngressTracking_EgressTracking_Counters{
 				InOctets: ygot.Uint64(400),
 				InPkts:   ygot.Uint64(40),
 				OutPkts:  ygot.Uint64(50),
@@ -863,22 +851,22 @@ func TestMplsLabelFromUint(t *testing.T) {
 	tests := []struct {
 		desc string
 		in   *uint64
-		want telemetry.Flow_IngressTracking_MplsLabel_Union
+		want oc.Flow_IngressTracking_MplsLabel_Union
 	}{{
 		desc: "nil",
-		want: telemetry.MplsTypes_MplsLabel_Enum_NO_LABEL,
+		want: oc.IngressTracking_MplsLabel_NO_LABEL,
 	}, {
 		desc: "enum",
 		in:   ygot.Uint64(1),
-		want: telemetry.MplsTypes_MplsLabel_Enum_ROUTER_ALERT,
+		want: oc.IngressTracking_MplsLabel_ROUTER_ALERT,
 	}, {
 		desc: "other uint value",
 		in:   ygot.Uint64(200),
-		want: telemetry.UnionUint32(200),
+		want: oc.UnionUint32(200),
 	}, {
 		desc: "overflow",
 		in:   ygot.Uint64(uint64(2) << 31),
-		want: telemetry.MplsTypes_MplsLabel_Enum_UNSET,
+		want: oc.IngressTracking_MplsLabel_UNSET,
 	}}
 
 	for _, tt := range tests {

@@ -20,33 +20,40 @@ package httpovergrpc
 
 import (
 	"bytes"
-	"golang.org/x/net/context"
 	"fmt"
 	"io"
 	"net/http"
 
+	"golang.org/x/net/context"
+
 	log "github.com/golang/glog"
 
+	closer "github.com/openconfig/gocloser"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/tag"
-	"github.com/openconfig/gocloser"
+
 	hpb "github.com/openconfig/ondatra/proxy/proto/httpovergrpc"
 )
 
 // Service provides the HttpProxy RPC service definitions.
 type Service struct {
 	hpb.UnimplementedHTTPOverGRPCServer
-	client *http.Client
+	client HTTPDoer
 }
 
 // Option defines the options to configure the HTTP over gRPC service.
 type Option func(s *Service)
 
-// WithTransport allows for setting the HTTP transport for the HTTP over
+// HTTPDoer provides an interface for round tripping an http request response.
+type HTTPDoer interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+// WithClient allows setting the http client for the HTTP over
 // gRPC service.
-func WithTransport(rt http.RoundTripper) Option {
+func WithClient(client HTTPDoer) Option {
 	return func(s *Service) {
-		s.client = &http.Client{Transport: rt}
+		s.client = client
 	}
 }
 

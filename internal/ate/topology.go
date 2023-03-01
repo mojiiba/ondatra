@@ -53,7 +53,7 @@ func (ix *ixATE) addPorts(top *Topology) error {
 	sort.Strings(portList)
 	for _, port := range portList {
 		vport := &ixconfig.Vport{
-			Name:      ixconfig.String(fmt.Sprintf("%s/%s", ix.name, port)),
+			Name:      ixconfig.String(port),
 			Location:  ixconfig.String(fmt.Sprintf("%s;%s", ix.chassisHost, strings.ReplaceAll(port, "/", ";"))),
 			L1Config:  &ixconfig.VportL1Config{},
 			Protocols: &ixconfig.VportProtocols{}, // Used as the target for traffic endpoints
@@ -65,13 +65,12 @@ func (ix *ixATE) addPorts(top *Topology) error {
 				},
 			},
 		}
-		// TODO : Set this based on the actual hardware type of the Ixia chassis port.
+		// TODO (team): Set this based on the actual hardware type of the Ixia chassis port.
 		const portInstrumentation = "floating"
 		aresOneFourHundredGigLan(vport.L1Config).AutoInstrumentation = ixconfig.String(portInstrumentation)
 		novusHundredGigLan(vport.L1Config).AutoInstrumentation = ixconfig.String(portInstrumentation)
 		novusTenGigLan(vport.L1Config).AutoInstrumentation = ixconfig.String(portInstrumentation)
 		ix.cfg.Vport = append(ix.cfg.Vport, vport)
-		ix.vportToPort[vport] = port
 		ix.ports[port] = vport
 	}
 	return nil
@@ -126,7 +125,7 @@ func (ix *ixATE) addLAGs(lags []*opb.Lag) error {
 
 // addTopology adds an IxNetwork topology with ports assigned and device groups created with ethernet configuration.
 // Each interface config must apply to the same set of ports.
-func (ix *ixATE) addTopology(ifs []*opb.InterfaceConfig) {
+func (ix *ixATE) addTopology(ifs []*opb.InterfaceConfig) error {
 	// Add an empty topology to the config.
 	var name string
 	var link ixconfig.IxiaCfgNode
@@ -134,13 +133,21 @@ func (ix *ixATE) addTopology(ifs []*opb.InterfaceConfig) {
 	topo := &ixconfig.Topology{}
 	switch v := ifs[0].GetLink().(type) {
 	case *opb.InterfaceConfig_Port:
+		var ok bool
 		name = v.Port
-		link = ix.ports[name]
+		link, ok = ix.ports[name]
+		if !ok {
+			return fmt.Errorf("no ATE port configured with name %q", name)
+		}
 		linkPorts = []*ixconfig.Vport{link.(*ixconfig.Vport)}
 		topo.SetVportsRefs([]ixconfig.IxiaCfgNode{link})
 	case *opb.InterfaceConfig_Lag:
+		var ok bool
 		name = v.Lag
-		link = ix.lags[name]
+		link, ok = ix.lags[name]
+		if !ok {
+			return fmt.Errorf("no ATE LAG configured with name %q", name)
+		}
 		linkPorts = ix.lagPorts[link.(*ixconfig.Lag)]
 		topo.SetPortsRefs([]ixconfig.IxiaCfgNode{link})
 	}
@@ -214,6 +221,7 @@ func (ix *ixATE) addTopology(ifs []*opb.InterfaceConfig) {
 		}
 	}
 	ix.cfg.Topology = append(ix.cfg.Topology, topo)
+	return nil
 }
 
 func aresOneFourHundredGigLan(l1 *ixconfig.VportL1Config) *ixconfig.VportL1ConfigAresOneFourHundredGigLan {

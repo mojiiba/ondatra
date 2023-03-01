@@ -15,7 +15,6 @@
 package ixweb
 
 import (
-	"golang.org/x/net/context"
 	"encoding/json"
 	"fmt"
 	"path"
@@ -23,6 +22,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"golang.org/x/net/context"
 
 	log "github.com/golang/glog"
 )
@@ -71,6 +72,7 @@ func (n *IxNetwork) NewSession(ctx context.Context, name string) (*Session, erro
 }
 
 type sessionData struct {
+	ID   int    `json:"id"`
 	Name string `json:"sessionName"`
 }
 
@@ -88,9 +90,22 @@ func encodeSessionName(s string) string {
 func (n *IxNetwork) FetchSession(ctx context.Context, id int) (*Session, error) {
 	data := sessionData{}
 	if err := n.ixweb.jsonReq(ctx, get, sessionPath(id), nil, &data); err != nil {
-		return nil, fmt.Errorf("error deleting session: %w", err)
+		return nil, fmt.Errorf("error fetching session: %w", err)
 	}
 	return &Session{ixweb: n.ixweb, id: id, name: data.Name}, nil
+}
+
+// FetchSessions fetches all current IxNetwork sessions.
+func (n *IxNetwork) FetchSessions(ctx context.Context) (map[int]*Session, error) {
+	var data []*sessionData
+	if err := n.ixweb.jsonReq(ctx, get, sessionsPath, nil, &data); err != nil {
+		return nil, fmt.Errorf("error fetching sessions: %w", err)
+	}
+	idToSession := map[int]*Session{}
+	for _, s := range data {
+		idToSession[s.ID] = &Session{ixweb: n.ixweb, id: s.ID, name: s.Name}
+	}
+	return idToSession, nil
 }
 
 // DeleteSession deletes the IxNetwork session with the specified ID.
@@ -151,7 +166,7 @@ func (s *Session) AbsPath(relPath string) string {
 }
 
 // Get submits a JSON GET request, at a path relative to the IxNetwork session.
-func (s *Session) Get(ctx context.Context, path string, out interface{}) error {
+func (s *Session) Get(ctx context.Context, path string, out any) error {
 	return s.jsonReq(ctx, get, path, nil, out)
 }
 
@@ -162,12 +177,12 @@ func (s *Session) Delete(ctx context.Context, path string) error {
 }
 
 // Patch submits a JSON PATCH request, at a path relative to the IxNetwork session.
-func (s *Session) Patch(ctx context.Context, path string, in interface{}) error {
+func (s *Session) Patch(ctx context.Context, path string, in any) error {
 	return s.jsonReq(ctx, patch, path, in, nil)
 }
 
 // Post submits a JSON POST request, at a path relative to the IxNetwork session.
-func (s *Session) Post(ctx context.Context, path string, in, out interface{}) error {
+func (s *Session) Post(ctx context.Context, path string, in, out any) error {
 	return s.jsonReq(ctx, post, path, in, out)
 }
 
@@ -227,7 +242,7 @@ func (s *Session) Errors(ctx context.Context) ([]*Error, error) {
 	return errors, nil
 }
 
-func (s *Session) jsonReq(ctx context.Context, method httpMethod, path string, in, out interface{}) error {
+func (s *Session) jsonReq(ctx context.Context, method httpMethod, path string, in, out any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.ixweb.jsonReq(ctx, method, s.AbsPath(path), in, out)
@@ -240,11 +255,11 @@ func (s *Session) binaryReq(ctx context.Context, method httpMethod, path string,
 }
 
 // OpArgs is a list of arguments for an operation to use as input to a POST request.
-type OpArgs []interface{}
+type OpArgs []any
 
 // MarshalJSON marshals the operation arguments to JSON.
 func (a OpArgs) MarshalJSON() ([]byte, error) {
-	m := make(map[string]interface{})
+	m := make(map[string]any)
 	for i, v := range a {
 		m["arg"+strconv.Itoa(i+1)] = v
 	}

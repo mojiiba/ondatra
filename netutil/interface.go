@@ -19,7 +19,9 @@ import (
 	"testing"
 
 	"github.com/openconfig/ondatra"
-	"github.com/openconfig/ondatra/telemetry"
+	"github.com/openconfig/ondatra/gnmi"
+	"github.com/openconfig/ondatra/gnmi/oc"
+	"github.com/openconfig/ygnmi/ygnmi"
 )
 
 var (
@@ -27,16 +29,51 @@ var (
 		ondatra.ARISTA:  "Loopback",
 		ondatra.CISCO:   "Loopback",
 		ondatra.JUNIPER: "lo",
+		ondatra.NOKIA:   "lo",
 	}
 	bundlePrefixes = map[ondatra.Vendor]string{
 		ondatra.ARISTA:  "Port-Channel",
 		ondatra.CISCO:   "Bundle-Ether",
 		ondatra.JUNIPER: "ae",
+		ondatra.NOKIA:   "lag",
 	}
 	vlanPrefixes = map[ondatra.Vendor]string{
 		ondatra.ARISTA:  "Vlan",
 		ondatra.CISCO:   "BVI",
 		ondatra.JUNIPER: "irb.",
+		ondatra.NOKIA:   "irb1.",
+	}
+	enableConfigs = map[ondatra.Vendor]string{
+		ondatra.ARISTA: `
+		  interface %s
+        no shutdown
+      !`,
+		ondatra.CISCO: `
+		  interface %s
+        no shutdown
+      !`,
+		ondatra.JUNIPER: `
+		  interfaces {
+		    %s {
+	        delete: disable;
+	      }
+	    }`,
+	}
+	disableConfigs = map[ondatra.Vendor]string{
+		ondatra.ARISTA: `
+		  interface %s
+        shutdown
+      !`,
+		ondatra.CISCO: `
+		  interface %s
+        shutdown
+      !`,
+		ondatra.JUNIPER: `
+		  interfaces {
+		    %s {
+	        disable;
+	      }
+	    }`,
 	}
 )
 
@@ -77,10 +114,9 @@ func VLANInterface(t *testing.T, dut *ondatra.DUTDevice, id int) string {
 // that, according to the device's telemetry, is not yet configured.
 func NextBundleInterface(t *testing.T, dut *ondatra.DUTDevice) string {
 	t.Helper()
-	batch := dut.Telemetry().NewBatch()
-	dut.Telemetry().InterfaceAny().Aggregation().Batch(t, batch)
-	bundleIntfs := batch.Lookup(t).Val(t).Interface
-	name, err := nextBundleInterface(dut.Vendor(), bundleIntfs)
+	batch := gnmi.OCBatch()
+	batch.AddPaths(gnmi.OC().InterfaceAny().Aggregation())
+	name, err := nextBundleInterface(t, dut.Vendor(), gnmi.Lookup(t, dut, batch.State()))
 	if err != nil {
 		t.Fatalf("NextBundleInterface(t, %s): %v", dut.Name(), err)
 	}
@@ -91,10 +127,9 @@ func NextBundleInterface(t *testing.T, dut *ondatra.DUTDevice) string {
 // that, according to the device's telemetry, is not yet configured.
 func NextVLANInterface(t *testing.T, dut *ondatra.DUTDevice) string {
 	t.Helper()
-	batch := dut.Telemetry().NewBatch()
-	dut.Telemetry().InterfaceAny().RoutedVlan().Batch(t, batch)
-	vlanIntfs := batch.Lookup(t).Val(t).Interface
-	name, err := nextVLANInterface(dut.Vendor(), vlanIntfs)
+	batch := gnmi.OCBatch()
+	batch.AddPaths(gnmi.OC().InterfaceAny().RoutedVlan())
+	name, err := nextVLANInterface(t, dut.Vendor(), gnmi.Lookup(t, dut, batch.State()))
 	if err != nil {
 		t.Fatalf("NextVLANInterface(t, %s): %v", dut.Name(), err)
 	}
@@ -134,10 +169,14 @@ func vlanInterface(vendor ondatra.Vendor, id int) (string, error) {
 	return intfName(prefix, id), nil
 }
 
-func nextBundleInterface(vendor ondatra.Vendor, bundleIntfs map[string]*telemetry.Interface) (string, error) {
+func nextBundleInterface(t *testing.T, vendor ondatra.Vendor, val *ygnmi.Value[*oc.Root]) (string, error) {
 	prefix, err := bundlePrefix(vendor)
 	if err != nil {
 		return "", err
+	}
+	var bundleIntfs map[string]*oc.Interface
+	if root, present := val.Val(); present {
+		bundleIntfs = root.Interface
 	}
 	for id := 1; ; id++ {
 		bundleName := intfName(prefix, id)
@@ -147,10 +186,14 @@ func nextBundleInterface(vendor ondatra.Vendor, bundleIntfs map[string]*telemetr
 	}
 }
 
-func nextVLANInterface(vendor ondatra.Vendor, vlanIntfs map[string]*telemetry.Interface) (string, error) {
+func nextVLANInterface(t *testing.T, vendor ondatra.Vendor, val *ygnmi.Value[*oc.Root]) (string, error) {
 	prefix, err := vlanPrefix(vendor)
 	if err != nil {
 		return "", err
+	}
+	var vlanIntfs map[string]*oc.Interface
+	if root, present := val.Val(); present {
+		vlanIntfs = root.Interface
 	}
 	for id := 1; ; id++ {
 		vlanName := intfName(prefix, id)

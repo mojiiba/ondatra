@@ -16,12 +16,14 @@
 package ate
 
 import (
-	"golang.org/x/net/context"
 	"fmt"
 	"sync"
+	"time"
 
-	"google.golang.org/grpc"
+	"golang.org/x/net/context"
+
 	"github.com/openconfig/ondatra/binding"
+	"github.com/openconfig/ondatra/internal/rawapis"
 
 	gpb "github.com/openconfig/gnmi/proto/gnmi"
 	opb "github.com/openconfig/ondatra/proto"
@@ -43,7 +45,7 @@ func ixiaForATE(ctx context.Context, ate binding.ATE) (*ixATE, error) {
 	defer mu.Unlock()
 	ix, ok := ixias[ate]
 	if !ok {
-		ixnet, err := ate.DialIxNetwork(ctx)
+		ixnet, err := rawapis.FetchIxNetwork(ctx, ate)
 		if err != nil {
 			return nil, err
 		}
@@ -75,7 +77,7 @@ func UpdateTopology(ctx context.Context, ate binding.ATE, top *Topology, bgpPeer
 	if err != nil {
 		return err
 	}
-	// TODO: Remove this branching once new Ixia config binding is used.
+	// TODO(team): Remove this branching once new Ixia config binding is used.
 	if bgpPeerStateOnly {
 		err = ix.UpdateBGPPeerStates(ctx, top.Interfaces)
 	} else {
@@ -162,13 +164,13 @@ func StopTraffic(ctx context.Context, ate binding.ATE) error {
 	return nil
 }
 
-// DialGNMI constructs and returns a GNMI client for the Ixia.
-func DialGNMI(ctx context.Context, ate binding.ATE, opts ...grpc.DialOption) (gpb.GNMIClient, error) {
+// FetchGNMI returns the GNMI client for the Ixia.
+func FetchGNMI(ctx context.Context, ate binding.ATE) (gpb.GNMIClient, error) {
 	ix, err := ixiaForATE(ctx, ate)
 	if err != nil {
 		return nil, err
 	}
-	return ix.DialGNMI(ctx, opts...)
+	return ix.FetchGNMI(ctx)
 }
 
 // SetPortState sets the state of a specified interface on the ATE.
@@ -197,6 +199,18 @@ func SendBGPPeerNotification(ctx context.Context, ate binding.ATE, peerIDs []uin
 	}
 	if err := ix.SendBGPPeerNotification(ctx, peerIDs, code, subCode); err != nil {
 		return fmt.Errorf("failed to send notification: %w", err)
+	}
+	return nil
+}
+
+// SendBGPGracefulRestart sends a BGP graceful restart event to BGP peers.
+func SendBGPGracefulRestart(ctx context.Context, ate binding.ATE, peerIDs []uint32, delay time.Duration) error {
+	ix, err := ixiaForATE(ctx, ate)
+	if err != nil {
+		return err
+	}
+	if err := ix.SendBGPGracefulRestart(ctx, peerIDs, delay); err != nil {
+		return fmt.Errorf("failed to send graceful restart: %w", err)
 	}
 	return nil
 }

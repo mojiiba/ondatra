@@ -15,13 +15,16 @@
 package ondatra
 
 import (
-	"golang.org/x/net/context"
 	"fmt"
 	"testing"
+	"time"
+
+	"golang.org/x/net/context"
 
 	"github.com/openconfig/ondatra/binding"
 	"github.com/openconfig/ondatra/internal/ate"
-	"github.com/openconfig/ondatra/internal/debugger"
+	"github.com/openconfig/ondatra/internal/events"
+	"github.com/openconfig/ondatra/ixnet"
 )
 
 // Actions is the ATE Actions API.
@@ -62,9 +65,9 @@ func (s *SetPortState) WithEnabled(enabled bool) *SetPortState {
 }
 
 // Send sends the SetPortState action to the ATE.
-func (s *SetPortState) Send(t *testing.T) {
+func (s *SetPortState) Send(t testing.TB) {
 	t.Helper()
-	debugger.ActionStarted(t, "Setting port state on %s", s.ate)
+	t = events.ActionStarted(t, "Setting port state on %s", s.ate)
 	if err := ate.SetPortState(context.Background(), s.ate, s.portName, s.enabled); err != nil {
 		t.Fatalf("Send(t) of %v: %v", s, err)
 	}
@@ -99,9 +102,9 @@ func (s *SetLACPState) WithEnabled(enabled bool) *SetLACPState {
 }
 
 // Send sends the SetLACPState action to the ATE.
-func (s *SetLACPState) Send(t *testing.T) {
+func (s *SetLACPState) Send(t testing.TB) {
 	t.Helper()
-	debugger.ActionStarted(t, "Setting LACP state on %s", s.ate)
+	t = events.ActionStarted(t, "Setting LACP state on %s", s.ate)
 	if err := ate.SetLACPState(context.Background(), s.ate, s.portName, s.enabled); err != nil {
 		t.Fatalf("Send(t) of %v: %v", s, err)
 	}
@@ -130,10 +133,10 @@ func (n *BGPPeerNotification) String() string {
 }
 
 // WithPeers sets the BGP peers from which the notification is to be sent.
-func (n *BGPPeerNotification) WithPeers(bgpPeers ...*BGPPeer) *BGPPeerNotification {
+func (n *BGPPeerNotification) WithPeers(bgpPeers ...*ixnet.BGPPeer) *BGPPeerNotification {
 	n.peerIDs = nil
 	for _, bgpPeer := range bgpPeers {
-		n.peerIDs = append(n.peerIDs, bgpPeer.pb.GetId())
+		n.peerIDs = append(n.peerIDs, bgpPeer.ID())
 	}
 	return n
 }
@@ -153,7 +156,50 @@ func (n *BGPPeerNotification) WithSubCode(subCode int) *BGPPeerNotification {
 // Send executes the operation to send notification/error codes.
 func (n *BGPPeerNotification) Send(t testing.TB) {
 	t.Helper()
+	t = events.ActionStarted(t, "Sending BGP peer notification on %s", n.ate)
 	if err := ate.SendBGPPeerNotification(context.Background(), n.ate, n.peerIDs, n.code, n.subCode); err != nil {
-		t.Fatalf("Send(t) failed on %s: %v", n, err)
+		t.Fatalf("Send(t) of %v: %v", n, err)
+	}
+}
+
+// NewBGPGracefulRestart returns a new BGPGracefulRestart action.
+func (a *Actions) NewBGPGracefulRestart() *BGPGracefulRestart {
+	return &BGPGracefulRestart{
+		ate: a.ate,
+	}
+}
+
+// BGPGracefulRestart is an action to trigger a BGP graceful restart event.
+type BGPGracefulRestart struct {
+	ate     binding.ATE
+	peerIDs []uint32
+	delay   time.Duration
+}
+
+func (r *BGPGracefulRestart) String() string {
+	return fmt.Sprintf("BGPGracefulRestart%+v", *r)
+}
+
+// WithPeers sets the BGP peers from which the graceful restart is to be sent.
+func (r *BGPGracefulRestart) WithPeers(bgpPeers ...*ixnet.BGPPeer) *BGPGracefulRestart {
+	r.peerIDs = nil
+	for _, bgpPeer := range bgpPeers {
+		r.peerIDs = append(r.peerIDs, bgpPeer.ID())
+	}
+	return r
+}
+
+// WithRestartTime sets the delay for the BGP sessions to remain down before restarting.
+func (r *BGPGracefulRestart) WithRestartTime(delay time.Duration) *BGPGracefulRestart {
+	r.delay = delay
+	return r
+}
+
+// Send executes the operation to start the graceful restart event.
+func (r *BGPGracefulRestart) Send(t testing.TB) {
+	t.Helper()
+	t = events.ActionStarted(t, "Sending BGP graceful restart on %s", r.ate)
+	if err := ate.SendBGPGracefulRestart(context.Background(), r.ate, r.peerIDs, r.delay); err != nil {
+		t.Fatalf("Send(t) of %v: %v", r, err)
 	}
 }

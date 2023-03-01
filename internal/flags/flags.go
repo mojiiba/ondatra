@@ -29,11 +29,10 @@ var (
 		"A zero value means here is no time limit. Must be a non-negative value.")
 	waitTime = flag.Duration("wait_time", 0, "Maximum amount of time the test should wait until the testbed is ready. "+
 		"A zero value lets the binding implementation choose an appropriate wait time. Must be a non-negative value.")
-	reserve = flag.String("reserve", "", "reservation id or a mapping of device and port IDs to names of the form "+
+	reserve = flag.String("reserve", "", "Reservation id or a mapping of device and port IDs to names of the form "+
 		"'dut=mydevice,dut:port1=Ethernet1/1,ate=myixia,ate:port2=2/3'")
-
+	xml   = flag.String("xml", "", "File path to write JUnit XML test results; disables normal Go test logging.")
 	debug = flag.Bool("debug", false, "Whether the test is run in debug mode")
-
 )
 
 // Values is the set of parsed and validated flag values.
@@ -43,6 +42,7 @@ type Values struct {
 	WaitTime    time.Duration
 	ResvID      string
 	ResvPartial map[string]string
+	XMLPath     string
 	Debug       bool
 }
 
@@ -51,6 +51,12 @@ func Parse() (*Values, error) {
 	if !flag.Parsed() {
 		flag.Parse()
 	}
+
+	// Always stream verbose test output. This is necessary for XML support,
+	// for notifying users when breakpoints are reached, and is generally
+	// a better default user experience for Ondatra tests.
+	flag.Set("test.v", "true")
+
 	if *testbed == "" {
 		return nil, fmt.Errorf("testbed path not specified")
 	}
@@ -59,6 +65,9 @@ func Parse() (*Values, error) {
 	}
 	if *waitTime < 0 {
 		return nil, fmt.Errorf("wait timeout is negative: %d", *waitTime)
+	}
+	if *reserve != "" && !*debug {
+		return nil, fmt.Errorf("reserve flag is only allowed in debug mode")
 	}
 	resvID, resvPartial, err := parseReserve(*reserve)
 	if err != nil {
@@ -70,7 +79,8 @@ func Parse() (*Values, error) {
 		WaitTime:    *waitTime,
 		ResvID:      resvID,
 		ResvPartial: resvPartial,
-		Debug: *debug,
+		XMLPath:     *xml,
+		Debug:       *debug,
 	}, nil
 }
 

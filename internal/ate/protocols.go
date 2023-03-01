@@ -329,7 +329,9 @@ func (ix *ixATE) addISISProtocols(ifc *opb.InterfaceConfig) error {
 		DiscardLSPs:        ixconfig.MultivalueBool(isis.GetDiscardLsps()),
 		AreaAddresses:      ixconfig.MultivalueStr(areaID),
 		TERouterId:         ixconfig.MultivalueStr(isis.GetTeRouterId()),
-		RtrcapId:           ixconfig.MultivalueStr(isis.GetCapabilityRouterId()),
+	}
+	if isis.GetCapabilityRouterId() != "" {
+		isisRtr.RtrcapId = ixconfig.MultivalueStr(isis.GetCapabilityRouterId())
 	}
 
 	if err = isisSegmentRouting(isisIntf, isisRtr, isis.GetSegmentRouting()); err != nil {
@@ -1469,6 +1471,10 @@ func bgpV4Peers(v4Peers []*opb.BgpPeer) ([]*ixconfig.TopologyBgpIpv4Peer, error)
 			HoldTimer:         ixconfig.MultivalueUint32(p.GetHoldTimeSec()),
 			KeepaliveTimer:    ixconfig.MultivalueUint32(p.GetKeepaliveTimeSec()),
 			FilterIpV4Unicast: ixconfig.MultivalueTrue(),
+			ActAsRestarted:    ixconfig.MultivalueBool(p.GetActAsRestarted()),
+			AdvertiseEndOfRib: ixconfig.MultivalueBool(p.GetAdvertiseEndOfRib()),
+			RestartTime:       ixconfig.MultivalueUint32(uint32(p.GetRestartTime().AsDuration().Seconds())),
+			StaleTime:         ixconfig.MultivalueUint32(uint32(p.GetStaleTime().AsDuration().Seconds())),
 		}
 		caps := p.GetCapabilities()
 		if caps != nil {
@@ -1532,6 +1538,10 @@ func bgpV6Peers(v6Peers []*opb.BgpPeer) ([]*ixconfig.TopologyBgpIpv6Peer, error)
 			HoldTimer:         ixconfig.MultivalueUint32(p.GetHoldTimeSec()),
 			KeepaliveTimer:    ixconfig.MultivalueUint32(p.GetKeepaliveTimeSec()),
 			FilterIpV6Unicast: ixconfig.MultivalueTrue(),
+			ActAsRestarted:    ixconfig.MultivalueBool(p.GetActAsRestarted()),
+			AdvertiseEndOfRib: ixconfig.MultivalueBool(p.GetAdvertiseEndOfRib()),
+			RestartTime:       ixconfig.MultivalueUint32(uint32(p.GetRestartTime().AsDuration().Seconds())),
+			StaleTime:         ixconfig.MultivalueUint32(uint32(p.GetStaleTime().AsDuration().Seconds())),
 		}
 		caps := p.GetCapabilities()
 		if caps != nil {
@@ -1586,34 +1596,11 @@ func bgpV6Peers(v6Peers []*opb.BgpPeer) ([]*ixconfig.TopologyBgpIpv6Peer, error)
 	return peers, nil
 }
 
-func appendStrToMultivalueList(mv *ixconfig.Multivalue, val string) *ixconfig.Multivalue {
-	if mv == nil {
-		mv = &ixconfig.Multivalue{ValueList: &ixconfig.MultivalueValueList{}}
-		mv.Pattern = ixconfig.String("valueList")
-	}
-	mv.ValueList.Values = append(mv.ValueList.Values, val)
-	return mv
-}
-
-func appendBoolToMultivalueList(mv *ixconfig.Multivalue, val bool) *ixconfig.Multivalue {
-	return appendStrToMultivalueList(mv, strconv.FormatBool(val))
-}
-
-func appendIntToMultivalueList(mv *ixconfig.Multivalue, val int) *ixconfig.Multivalue {
-	return appendStrToMultivalueList(mv, strconv.Itoa(val))
-}
-
-func appendUintToMultivalueList(mv *ixconfig.Multivalue, val uint32) *ixconfig.Multivalue {
-	return appendStrToMultivalueList(mv, strconv.FormatUint(uint64(val), 10))
-}
-
-func appendUint64ToMultivalueList(mv *ixconfig.Multivalue, val uint64) *ixconfig.Multivalue {
-	return appendStrToMultivalueList(mv, strconv.FormatUint(val, 10))
-}
-
-// addISISProtocols adds IxNetwork RSVP protocols, assuming the IS-IS network
-// groups for the given interface already exist.
 func (ix *ixATE) addRSVPProtocols(ifc *opb.InterfaceConfig) error {
+	if len(ifc.GetRsvps()) == 0 {
+		return nil
+	}
+
 	intf := ix.intfs[ifc.GetName()]
 	intf.rsvpLSPs = make(map[string]*ixconfig.TopologyRsvpteLsps, len(ifc.GetRsvps()))
 	for rsvpIdx, rsvp := range ifc.GetRsvps() {
@@ -1636,7 +1623,7 @@ func (ix *ixATE) addRSVPProtocols(ifc *opb.InterfaceConfig) error {
 
 		numLoopbacks := len(rsvp.GetLoopbacks())
 		ntl := ng.NetworkTopology.NetTopologyLinear
-		// TODO: Will need a different check after enabling custom IS-IS topologies.
+		// TODO(team): Will need a different check after enabling custom IS-IS topologies.
 		if ntl == nil || ntl.Nodes == nil || *(ntl.Nodes) < float32(numLoopbacks) {
 			return fmt.Errorf("cannot add more loopbacks than configured IS-IS nodes on reachability config %q", rsvp.GetIsReachabilityName())
 		}
@@ -1767,4 +1754,54 @@ func (ix *ixATE) addRSVPProtocols(ifc *opb.InterfaceConfig) error {
 		}
 	}
 	return nil
+}
+
+func (ix *ixATE) addDHCPProtocols(ifc *opb.InterfaceConfig) error {
+	intf := ix.intfs[ifc.GetName()]
+
+	if dhcp6c := ifc.GetDhcpv6Client(); dhcp6c != nil {
+		eth := intf.deviceGroup.Ethernet[0]
+		eth.Dhcpv6client = []*ixconfig.TopologyDhcpv6client{{}}
+	}
+
+	if dhcp6s := ifc.GetDhcpv6Server(); dhcp6s != nil {
+		step, err := addrRangeToStep(dhcp6s.LeaseAddrs, ipv6AddrType)
+		if err != nil {
+			return err
+		}
+		intf.ipv6.Dhcpv6server = []*ixconfig.TopologyDhcpv6server{{
+			Dhcp6ServerSessions: &ixconfig.TopologyDhcp6ServerSessions{
+				IpAddress:          ixconfig.MultivalueStr(dhcp6s.LeaseAddrs.GetMin()),
+				IpAddressIncrement: ixconfig.MultivalueStr(step),
+				PoolSize:           ixconfig.MultivalueUint32(dhcp6s.LeaseAddrs.GetCount()),
+			},
+		}}
+	}
+
+	return nil
+}
+
+func appendStrToMultivalueList(mv *ixconfig.Multivalue, val string) *ixconfig.Multivalue {
+	if mv == nil {
+		mv = &ixconfig.Multivalue{ValueList: &ixconfig.MultivalueValueList{}}
+		mv.Pattern = ixconfig.String("valueList")
+	}
+	mv.ValueList.Values = append(mv.ValueList.Values, val)
+	return mv
+}
+
+func appendBoolToMultivalueList(mv *ixconfig.Multivalue, val bool) *ixconfig.Multivalue {
+	return appendStrToMultivalueList(mv, strconv.FormatBool(val))
+}
+
+func appendIntToMultivalueList(mv *ixconfig.Multivalue, val int) *ixconfig.Multivalue {
+	return appendStrToMultivalueList(mv, strconv.Itoa(val))
+}
+
+func appendUintToMultivalueList(mv *ixconfig.Multivalue, val uint32) *ixconfig.Multivalue {
+	return appendStrToMultivalueList(mv, strconv.FormatUint(uint64(val), 10))
+}
+
+func appendUint64ToMultivalueList(mv *ixconfig.Multivalue, val uint64) *ixconfig.Multivalue {
+	return appendStrToMultivalueList(mv, strconv.FormatUint(val, 10))
 }

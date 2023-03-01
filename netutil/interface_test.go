@@ -19,7 +19,8 @@ import (
 	"testing"
 
 	"github.com/openconfig/ondatra"
-	"github.com/openconfig/ondatra/telemetry"
+	"github.com/openconfig/ondatra/gnmi/oc"
+	"github.com/openconfig/ygnmi/ygnmi"
 )
 
 func TestLoopbackInterface(t *testing.T) {
@@ -44,6 +45,11 @@ func TestLoopbackInterface(t *testing.T) {
 		vendor: ondatra.JUNIPER,
 		num:    3,
 		want:   "lo3",
+	}, {
+		desc:   "nokia",
+		vendor: ondatra.NOKIA,
+		num:    4,
+		want:   "lo4",
 	}, {
 		desc:    "no prefix",
 		vendor:  ondatra.IXIA,
@@ -91,6 +97,11 @@ func TestBundleInterface(t *testing.T) {
 		num:    113,
 		want:   "ae113",
 	}, {
+		desc:   "nokia",
+		vendor: ondatra.NOKIA,
+		num:    24,
+		want:   "lag24",
+	}, {
 		desc:    "no prefix",
 		vendor:  ondatra.IXIA,
 		wantErr: "no bundle interface prefix",
@@ -137,6 +148,11 @@ func TestVLANInterface(t *testing.T) {
 		num:    5,
 		want:   "irb.5",
 	}, {
+		desc:   "nokia",
+		vendor: ondatra.NOKIA,
+		num:    6,
+		want:   "irb1.6",
+	}, {
 		desc:    "no prefix",
 		vendor:  ondatra.IXIA,
 		wantErr: "no VLAN interface prefix",
@@ -164,7 +180,7 @@ func TestNextBundleInterface(t *testing.T) {
 	tests := []struct {
 		desc    string
 		vendor  ondatra.Vendor
-		intfs   map[string]*telemetry.Interface
+		intfs   map[string]*oc.Interface
 		want    string
 		wantErr string
 	}{{
@@ -180,11 +196,15 @@ func TestNextBundleInterface(t *testing.T) {
 		vendor: ondatra.JUNIPER,
 		want:   "ae1",
 	}, {
+		desc:   "nokia first",
+		vendor: ondatra.NOKIA,
+		want:   "lag1",
+	}, {
 		desc:   "between intfs",
 		vendor: ondatra.ARISTA,
-		intfs: map[string]*telemetry.Interface{
-			"Port-Channel1": &telemetry.Interface{},
-			"Port-Channel3": &telemetry.Interface{},
+		intfs: map[string]*oc.Interface{
+			"Port-Channel1": &oc.Interface{},
+			"Port-Channel3": &oc.Interface{},
 		},
 		want: "Port-Channel2",
 	}, {
@@ -195,7 +215,13 @@ func TestNextBundleInterface(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.desc, func(t *testing.T) {
-			got, err := nextBundleInterface(test.vendor, test.intfs)
+			val := &ygnmi.Value[*oc.Root]{}
+			if test.intfs != nil {
+				val.SetVal(&oc.Root{
+					Interface: test.intfs,
+				})
+			}
+			got, err := nextBundleInterface(t, test.vendor, val)
 			if (err == nil) != (test.wantErr == "") || (err != nil && !strings.Contains(err.Error(), test.wantErr)) {
 				t.Errorf("nextBundleInterface got err %v, want %s", err, test.wantErr)
 			}
@@ -210,7 +236,7 @@ func TestNextVLANInterface(t *testing.T) {
 	tests := []struct {
 		desc    string
 		vendor  ondatra.Vendor
-		intfs   map[string]*telemetry.Interface
+		intfs   map[string]*oc.Interface
 		want    string
 		wantErr string
 	}{{
@@ -226,11 +252,15 @@ func TestNextVLANInterface(t *testing.T) {
 		vendor: ondatra.JUNIPER,
 		want:   "irb.1",
 	}, {
+		desc:   "nokia first",
+		vendor: ondatra.NOKIA,
+		want:   "irb1.1",
+	}, {
 		desc:   "between intfs",
 		vendor: ondatra.CISCO,
-		intfs: map[string]*telemetry.Interface{
-			"BVI1": &telemetry.Interface{},
-			"BVI3": &telemetry.Interface{},
+		intfs: map[string]*oc.Interface{
+			"BVI1": &oc.Interface{},
+			"BVI3": &oc.Interface{},
 		},
 		want: "BVI2",
 	}, {
@@ -241,7 +271,13 @@ func TestNextVLANInterface(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.desc, func(t *testing.T) {
-			got, err := nextVLANInterface(test.vendor, test.intfs)
+			val := &ygnmi.Value[*oc.Root]{}
+			if test.intfs != nil {
+				val.SetVal(&oc.Root{
+					Interface: test.intfs,
+				})
+			}
+			got, err := nextVLANInterface(t, test.vendor, val)
 			if (err == nil) != (test.wantErr == "") || (err != nil && !strings.Contains(err.Error(), test.wantErr)) {
 				t.Errorf("nextVLANInterface got err %v, want %s", err, test.wantErr)
 			}

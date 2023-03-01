@@ -36,10 +36,10 @@ func (i *Interface) IsLACPEnabled() bool {
 }
 
 // AddNetwork adds and returns a network with the specified name.
-func (i *Interface) AddNetwork(name string) *Network {
+func (i *Interface) AddNetwork(name string) *ixnet.Network {
 	npb := &opb.Network{Name: name, InterfaceName: i.pb.Name}
 	i.pb.Networks = append(i.pb.Networks, npb)
-	return &Network{pb: npb}
+	return ixnet.NewNetwork(npb)
 }
 
 // ClearNetworks clears networks from the interface.
@@ -49,10 +49,10 @@ func (i *Interface) ClearNetworks() *Interface {
 }
 
 // Networks returns a map of network names to networks.
-func (i *Interface) Networks() map[string]*Network {
-	nets := make(map[string]*Network)
+func (i *Interface) Networks() map[string]*ixnet.Network {
+	nets := make(map[string]*ixnet.Network)
 	for _, pb := range i.pb.GetNetworks() {
-		nets[pb.GetName()] = &Network{pb}
+		nets[pb.GetName()] = ixnet.NewNetwork(pb)
 	}
 	return nets
 }
@@ -64,7 +64,7 @@ func (i *Interface) WithPort(p *Port) *Interface {
 }
 
 // WithLAG specifies that the interface will be configured on the given LAG.
-// TODO: Add Ondatra test for this feature.
+// TODO(team): Add Ondatra test for this feature.
 func (i *Interface) WithLAG(l *LAG) *Interface {
 	i.pb.Link = &opb.InterfaceConfig_Lag{l.pb.GetName()}
 	return i
@@ -77,8 +77,8 @@ func (i *Interface) WithLACPEnabled(enabled bool) *Interface {
 }
 
 // Ethernet returns the existing Ethernet config.
-func (i *Interface) Ethernet() *Ethernet {
-	return &Ethernet{pb: i.pb.Ethernet}
+func (i *Interface) Ethernet() *ixnet.Ethernet {
+	return ixnet.NewEthernet(i.pb.Ethernet)
 }
 
 // IPv4 creates an IPv4 config for the interface or returns the existing config.
@@ -128,11 +128,11 @@ func (i *Interface) ISIS() *ixnet.ISIS {
 }
 
 // BGP creates a BGP config for the interface or returns the existing config.
-func (i *Interface) BGP() *BGP {
+func (i *Interface) BGP() *ixnet.BGP {
 	if i.pb.Bgp == nil {
 		i.pb.Bgp = &opb.BgpConfig{}
 	}
-	return &BGP{pb: i.pb.Bgp}
+	return ixnet.NewBGP(i.pb.Bgp)
 }
 
 // AddRSVP adds an RSVP config to the interface.
@@ -140,4 +140,20 @@ func (i *Interface) AddRSVP(name string) *ixnet.RSVP {
 	rpb := &opb.RsvpConfig{Name: name, InterfaceName: i.pb.Name}
 	i.pb.Rsvps = append(i.pb.Rsvps, rpb)
 	return ixnet.NewRSVP(rpb)
+}
+
+// DHCPV6Client creates a DHCP v6 Client or returns the existing config.
+func (i *Interface) DHCPV6Client() *ixnet.DHCPV6Client {
+	if i.pb.Dhcpv6Client == nil {
+		i.pb.Dhcpv6Client = &opb.DhcpV6Client{}
+	}
+	return ixnet.NewDHCPV6Client(i.pb.Dhcpv6Client)
+}
+
+// DHCPV6Server creates a DHCP v6 Server or returns the existing config.
+func (i *Interface) DHCPV6Server() *ixnet.DHCPV6Server {
+	if i.pb.Dhcpv6Server == nil {
+		i.pb.Dhcpv6Server = &opb.DhcpV6Server{}
+	}
+	return ixnet.NewDHCPV6Server(i.pb.Dhcpv6Server)
 }

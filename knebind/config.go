@@ -16,18 +16,62 @@ package knebind
 
 import (
 	"fmt"
-	"io/ioutil"
+	"os"
+	"strings"
 
 	"gopkg.in/yaml.v2"
+
+	tpb "github.com/openconfig/kne/proto/topo"
 )
 
 // Config contains parameters to configure the KNE binding.
 // They are all exported so they can be unmarhalled from YAML.
 type Config struct {
+	// TODO(team): Deprecate username and password fields. Add option inside credentials field.
 	Username, Password string
-	TopoPath           string `yaml:"topology"`
-	CLIPath            string `yaml:"cli"`
-	KubecfgPath        string `yaml:"kubecfg"`
+	Credentials        *Credentials `yaml:"credentials"`
+	TopoPath           string       `yaml:"topology"`
+	KubecfgPath        string       `yaml:"kubecfg"`
+	SkipReset          bool         `yaml:"skip_reset"`
+}
+
+// Credentials contains credential maps for nodes in the KNE topology.
+type Credentials struct {
+	Node   map[string]*UserPass     `yaml:"node"`
+	Vendor map[tpb.Vendor]*UserPass `yaml:"vendor"`
+}
+
+// UnmarshalYAML allows the Credentials type to be correctly unmarshaled from yaml.
+func (c *Credentials) UnmarshalYAML(unmarshal func(any) error) error {
+	var u map[string]map[any]*UserPass
+	if err := unmarshal(&u); err != nil {
+		return err
+	}
+	for k, v := range u {
+		switch key := strings.ToLower(k); key {
+		case "node":
+			c.Node = make(map[string]*UserPass)
+			for k, v := range v {
+				c.Node[k.(string)] = v
+			}
+		case "vendor":
+			c.Vendor = make(map[tpb.Vendor]*UserPass)
+			for k, v := range v {
+				n, ok := tpb.Vendor_value[k.(string)]
+				if !ok {
+					return fmt.Errorf("kne vendor %v not recognized", k)
+				}
+				c.Vendor[tpb.Vendor(n)] = v
+			}
+		}
+	}
+	return nil
+}
+
+// UserPass contains a username and password combination.
+type UserPass struct {
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
 }
 
 func (c *Config) String() string {
@@ -36,7 +80,7 @@ func (c *Config) String() string {
 
 // ParseConfigFile parses a yaml file containing a serialized Config.
 func ParseConfigFile(configFile string) (*Config, error) {
-	data, err := ioutil.ReadFile(configFile)
+	data, err := os.ReadFile(configFile)
 	if err != nil {
 		return nil, fmt.Errorf("error reading config file: %w", err)
 	}
@@ -44,18 +88,8 @@ func ParseConfigFile(configFile string) (*Config, error) {
 	if err := yaml.Unmarshal(data, c); err != nil {
 		return nil, fmt.Errorf("error unmarshalling config YAML: %w", err)
 	}
-	if c.Username == "" {
-		return nil, fmt.Errorf("no username specified in config: %v", c)
-	}
-	if c.Password == "" {
-		return nil, fmt.Errorf("No password specified in config: %v", c)
-	}
 	if c.TopoPath == "" {
 		return nil, fmt.Errorf("no topology path specified in config: %v", c)
-	}
-	if c.CLIPath == "" {
-		// If no CLI path specified, use kne_cli available in PATH.
-		c.CLIPath = "kne_cli"
 	}
 	return c, nil
 }

@@ -15,14 +15,15 @@
 package binding
 
 import (
-	"golang.org/x/net/context"
 	"errors"
 	"fmt"
 	"io"
 
+	"golang.org/x/net/context"
+
 	log "github.com/golang/glog"
-	"google.golang.org/grpc"
 	"github.com/open-traffic-generator/snappi/gosnappi"
+	"google.golang.org/grpc"
 
 	gpb "github.com/openconfig/gnmi/proto/gnmi"
 	bpb "github.com/openconfig/gnoi/bgp"
@@ -36,6 +37,7 @@ import (
 	mpb "github.com/openconfig/gnoi/mpls"
 	ospb "github.com/openconfig/gnoi/os"
 	otpb "github.com/openconfig/gnoi/otdr"
+	plqpb "github.com/openconfig/gnoi/packet_link_qualification"
 	spb "github.com/openconfig/gnoi/system"
 	wpb "github.com/openconfig/gnoi/wavelength_router"
 
@@ -77,6 +79,11 @@ func (d *AbstractDUT) Ports() map[string]*Port {
 	return d.Dims.Ports
 }
 
+// CustomData returns custom data for the DUT.
+func (d *AbstractDUT) CustomData() map[string]any {
+	return d.Dims.CustomData
+}
+
 func (d *AbstractDUT) String() string {
 	return fmt.Sprintf("DUT%+v", *d)
 }
@@ -87,12 +94,12 @@ func (d *AbstractDUT) PushConfig(ctx context.Context, config string, reset bool)
 }
 
 // DialCLI returns an unimplemented error.
-func (d *AbstractDUT) DialCLI(context.Context, ...grpc.DialOption) (StreamClient, error) {
+func (d *AbstractDUT) DialCLI(context.Context) (StreamClient, error) {
 	return nil, errors.New("DialCLI unimplemented")
 }
 
 // DialConsole returns an unimplemented error.
-func (d *AbstractDUT) DialConsole(context.Context, ...grpc.DialOption) (StreamClient, error) {
+func (d *AbstractDUT) DialConsole(context.Context) (StreamClient, error) {
 	return nil, errors.New("DialConsole unimplemented")
 }
 
@@ -151,6 +158,11 @@ func (a *AbstractATE) Ports() map[string]*Port {
 	return a.Dims.Ports
 }
 
+// CustomData returns custom data for the ATE.
+func (a *AbstractATE) CustomData() map[string]any {
+	return a.Dims.CustomData
+}
+
 func (a *AbstractATE) String() string {
 	return fmt.Sprintf("ATE%+v", *a)
 }
@@ -166,7 +178,7 @@ func (a *AbstractATE) DialGNMI(context.Context, ...grpc.DialOption) (gpb.GNMICli
 }
 
 // DialOTG returns an unimplemented error.
-func (a *AbstractATE) DialOTG(context.Context) (gosnappi.GosnappiApi, error) {
+func (a *AbstractATE) DialOTG(context.Context, ...grpc.DialOption) (gosnappi.GosnappiApi, error) {
 	return nil, errors.New("DialOTG unimplemented")
 }
 
@@ -222,6 +234,12 @@ func (g *AbstractGNOIClients) Interface() ipb.InterfaceClient {
 // Layer2 logs a fatal unimplemented error.
 func (g *AbstractGNOIClients) Layer2() lpb.Layer2Client {
 	log.Fatal("Layer2 unimplemented")
+	return nil
+}
+
+// LinkQualification logs a fatal unimplemented error.
+func (g *AbstractGNOIClients) LinkQualification() plqpb.LinkQualificationClient {
+	log.Fatal("LinkQualification unimplemented")
 	return nil
 }
 

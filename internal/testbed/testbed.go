@@ -16,16 +16,17 @@
 package testbed
 
 import (
-	"golang.org/x/net/context"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"regexp"
 	"sync"
 
-	"google.golang.org/protobuf/encoding/prototext"
+	"golang.org/x/net/context"
+
 	"github.com/openconfig/ondatra/binding"
 	"github.com/openconfig/ondatra/internal/flags"
+	"google.golang.org/protobuf/encoding/prototext"
 
 	opb "github.com/openconfig/ondatra/proto"
 )
@@ -40,6 +41,14 @@ var (
 // SetBinding sets the Ondatra binding.
 func SetBinding(b binding.Binding) {
 	bind = b
+}
+
+// SetReservationForTesting sets Ondatra to a state in which the specified
+// reservation has been reserved. A nil reservation argument sets Ondatra to
+// an unreserved state. This is only called by fakebind for testing purposes.
+func SetReservationForTesting(r *binding.Reservation) {
+	res = r
+	fetched = false
 }
 
 // Reservation returns the current reservation.
@@ -60,7 +69,7 @@ func Reserve(ctx context.Context, fv *flags.Values) error {
 		return errors.New("testbed is already reserved; Did you call ondatra.RunTests multiple times?")
 	}
 	tb := &opb.Testbed{}
-	s, err := ioutil.ReadFile(fv.TestbedPath)
+	s, err := os.ReadFile(fv.TestbedPath)
 	if err != nil {
 		return fmt.Errorf("failed to read testbed proto %s: %w", fv.TestbedPath, err)
 	}

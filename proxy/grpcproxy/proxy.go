@@ -19,20 +19,21 @@
 package grpcproxy
 
 import (
-	"golang.org/x/net/context"
 	"fmt"
 	"io"
 	"net"
 	"strings"
 
+	"golang.org/x/net/context"
+
 	log "github.com/golang/glog"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/tag"
 	"go.opencensus.io/trace"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 var (
@@ -134,7 +135,7 @@ func (p *proxy) dialTarget(ctx context.Context, method string) (context.Context,
 	return destCtx, c, nil
 }
 
-func (p *proxy) instrumentedStreamHandler(srv interface{}, stream grpc.ServerStream) error {
+func (p *proxy) instrumentedStreamHandler(srv any, stream grpc.ServerStream) error {
 	ctx := stream.Context()
 	method, ok := grpc.MethodFromServerStream(stream)
 	if !strings.HasPrefix(method, "/") {
