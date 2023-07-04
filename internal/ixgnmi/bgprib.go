@@ -17,6 +17,7 @@ package ixgnmi
 import (
 	"fmt"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -121,6 +122,7 @@ func populateRIB(netInst *oc.NetworkInstance, peer4Infos, peer6Infos map[string]
 			GetOrCreateAdjRibInPre()
 		attrLen := len(rib.AttrSet)
 		commLen := len(rib.Community)
+		extCommLen := len(rib.ExtCommunity)
 
 		for i, info := range infos {
 			if info == (bgpLearnedInfo{}) {
@@ -129,7 +131,8 @@ func populateRIB(netInst *oc.NetworkInstance, peer4Infos, peer6Infos map[string]
 			}
 			attrIndex := uint64(i + attrLen)
 			commIndex := uint64(i + commLen)
-			if err := appendDetails(info, rib, attrIndex, commIndex, true); err != nil {
+			extCommIndex := uint64(i + extCommLen)
+			if err := appendDetails(info, rib, attrIndex, commIndex, extCommIndex, true); err != nil {
 				return fmt.Errorf("failed to append details for elem %d: %w", i, err)
 			}
 			route := &oc.NetworkInstance_Protocol_Bgp_Rib_AfiSafi_Ipv4Unicast_Neighbor_AdjRibInPre_Route{
@@ -151,6 +154,7 @@ func populateRIB(netInst *oc.NetworkInstance, peer4Infos, peer6Infos map[string]
 			GetOrCreateAdjRibInPre()
 		attrLen := len(rib.AttrSet)
 		commLen := len(rib.Community)
+		extCommLen := len(rib.ExtCommunity)
 
 		for i, info := range infos {
 			if info == (bgpLearnedInfo{}) {
@@ -159,7 +163,8 @@ func populateRIB(netInst *oc.NetworkInstance, peer4Infos, peer6Infos map[string]
 			}
 			attrIndex := uint64(i + attrLen)
 			commIndex := uint64(i + commLen)
-			if err := appendDetails(info, rib, attrIndex, commIndex, false); err != nil {
+			extCommIndex := uint64(i + extCommLen)
+			if err := appendDetails(info, rib, attrIndex, commIndex, extCommIndex, false); err != nil {
 				return fmt.Errorf("failed to append details for elem %d: %w", i, err)
 			}
 			route := &oc.NetworkInstance_Protocol_Bgp_Rib_AfiSafi_Ipv6Unicast_Neighbor_AdjRibInPre_Route{
@@ -176,7 +181,7 @@ func populateRIB(netInst *oc.NetworkInstance, peer4Infos, peer6Infos map[string]
 	return nil
 }
 
-func appendDetails(info bgpLearnedInfo, rib *oc.NetworkInstance_Protocol_Bgp_Rib, attrIndex, commIndex uint64, v4 bool) error {
+func appendDetails(info bgpLearnedInfo, rib *oc.NetworkInstance_Protocol_Bgp_Rib, attrIndex, commIndex, extCommIndex uint64, v4 bool) error {
 	nextHop := info.IPV6NextHop
 	if v4 {
 		nextHop = info.IPV4NextHop
@@ -200,37 +205,94 @@ func appendDetails(info bgpLearnedInfo, rib *oc.NetworkInstance_Protocol_Bgp_Rib
 		return fmt.Errorf("unknown origin type: %q", info.Origin)
 	}
 
-	if len(info.ASPath) > 0 {
-		lastIdx := len(info.ASPath) - 1
-		if info.ASPath[0] != '<' || info.ASPath[lastIdx] != '>' {
-			return fmt.Errorf("invalid AS path string: %q", info.ASPath)
-		}
-		var members []uint32
-		for _, s := range strings.Split(info.ASPath[1:lastIdx], " ") {
-			member, err := strconv.ParseUint(s, 10, 32)
-			if err != nil {
-				return fmt.Errorf("invalid AS segment member: %q", s)
-			}
-			members = append(members, uint32(member))
-		}
-		as.AppendAsSegment(&oc.NetworkInstance_Protocol_Bgp_Rib_AttrSet_AsSegment{
-			Index:  ygot.Uint32(0),
-			Member: members,
-			Type:   oc.RibBgp_AsPathSegmentType_AS_SEQ,
-		})
+	asSegs, err := parseASSegments(info.ASPath)
+	if err != nil {
+		return err
 	}
-
+	for _, seg := range asSegs {
+		as.AppendAsSegment(seg)
+	}
 	if err := rib.AppendAttrSet(as); err != nil {
 		return err
 	}
 
-	community := &oc.NetworkInstance_Protocol_Bgp_Rib_Community{
+	comm := &oc.NetworkInstance_Protocol_Bgp_Rib_Community{
 		Index: &commIndex,
 	}
-	for _, str := range strings.Split(info.Community, ", ") {
-		if str != "" {
-			community.Community = append(community.Community, oc.UnionString(str))
-		}
+	for _, c := range parseCommunities(info.Community) {
+		comm.Community = append(comm.Community, c)
 	}
-	return rib.AppendCommunity(community)
+	if err := rib.AppendCommunity(comm); err != nil {
+		return err
+	}
+
+	extComm := &oc.NetworkInstance_Protocol_Bgp_Rib_ExtCommunity{
+		Index: &extCommIndex,
+	}
+	for _, ec := range parseCommunities(info.Color) {
+		extComm.ExtCommunity = append(extComm.ExtCommunity, ec)
+	}
+	if err := rib.AppendExtCommunity(extComm); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func parseCommunities(s string) []oc.UnionString {
+	// Needed because an empty string will split into a 1-length array containing the empty string.
+	if s == "" {
+		return nil
+	}
+	var comms []oc.UnionString
+	for _, str := range strings.Split(s, ", ") {
+		comms = append(comms, oc.UnionString(str))
+	}
+	return comms
+}
+
+var (
+	asSegRE      = regexp.MustCompile("(<|{)[^>}]*(>|})")
+	asSegDelimRE = regexp.MustCompile("\\s*(\\s|,)\\s*")
+)
+
+func parseASSegments(asPathStr string) ([]*oc.NetworkInstance_Protocol_Bgp_Rib_AttrSet_AsSegment, error) {
+	// Split asPathStr into segments.
+	// Apparently SEQs are space-separated and SETs are comma-separated,
+	// but the parsing logic is robust to either of those separators.
+	// Example: "<1 2> {3,4,5} <6>" -> ["<1 2>", "{3,4,5}", "<6>"]
+	segStrs := asSegRE.FindAllString(asPathStr, -1)
+
+	var segs []*oc.NetworkInstance_Protocol_Bgp_Rib_AttrSet_AsSegment
+	for i, segStr := range segStrs {
+		segType := oc.RibBgp_AsPathSegmentType_AS_SEQ
+		if segStr[0] == '{' {
+			segType = oc.RibBgp_AsPathSegmentType_AS_SET
+		}
+
+		// Chop off the open and closing bracket/brace
+		// Example: "{3 4 5}" -> "3 4 5"
+		segStr = segStr[1 : len(segStr)-1]
+		var members []uint32
+
+		// Split the string at whitespace or commas and convert each element to uint32.
+		// Example with whitespace: "1 2" -> ["1", "2"]
+		// Example with commas: "3,4,5" -> ["3", "4", "5"]
+		for _, s := range asSegDelimRE.Split(segStr, -1) {
+			if len(s) == 0 {
+				continue
+			}
+			member, err := strconv.ParseUint(s, 10, 32)
+			if err != nil {
+				return nil, fmt.Errorf("invalid AS segment member: %q", s)
+			}
+			members = append(members, uint32(member))
+		}
+		segs = append(segs, &oc.NetworkInstance_Protocol_Bgp_Rib_AttrSet_AsSegment{
+			Index:  ygot.Uint32(uint32(i)),
+			Member: members,
+			Type:   segType,
+		})
+	}
+	return segs, nil
 }

@@ -32,8 +32,14 @@ import (
 	opb "github.com/openconfig/ondatra/proto"
 )
 
-// KNEServiceMapKey is the key to look up the service map in the custom data of a ServiceDUT.
-const KNEServiceMapKey = "$KEY_SERVICE_MAP"
+const (
+	// KNEServiceMapKey is the key to look up the service map in the custom data of a ServiceDUT.
+	KNEServiceMapKey = "$KEY_SERVICE_MAP"
+
+	roleLabel = "ondatra-role"
+	roleDUT   = "DUT"
+	roleATE   = "ATE"
+)
 
 var (
 	ateVendors = map[tpb.Vendor]bool{
@@ -49,6 +55,16 @@ var (
 		tpb.Vendor_OPENCONFIG: opb.Device_OPENCONFIG,
 	}
 )
+
+func role(node *tpb.Node) string {
+	if role, ok := node.GetLabels()[roleLabel]; ok {
+		return role
+	}
+	if _, ok := ateVendors[node.GetVendor()]; ok {
+		return roleATE
+	}
+	return roleDUT
+}
 
 func filterTopology(topo *tpb.Topology) *tpb.Topology {
 	t := &tpb.Topology{Name: topo.GetName()}
@@ -82,6 +98,7 @@ func filterTopology(topo *tpb.Topology) *tpb.Topology {
 const (
 	// Attribute names mapping message fields to graph attributes/constraints.
 	vendorAttr = "vendor"
+	roleAttr   = "role"
 	hwAttr     = "hardware_model"
 	swAttr     = "software_version"
 	speedAttr  = "speed"
@@ -89,6 +106,7 @@ const (
 	pmdAttr    = "pmd"
 	groupAttr  = "group"
 	mtuAttr    = "mtu"
+	nameAttr   = "name"
 )
 
 var (
@@ -96,30 +114,21 @@ var (
 )
 
 // testbedToAbstractGraph translates an Ondatra testbed to an AbstractGraph for solving.
-func testbedToAbstractGraph(tb *opb.Testbed) (*portgraph.AbstractGraph, map[*portgraph.AbstractNode]*opb.Device, map[*portgraph.AbstractPort]*opb.Port, error) {
+func testbedToAbstractGraph(tb *opb.Testbed, partial map[string]string) (*portgraph.AbstractGraph, map[*portgraph.AbstractNode]*opb.Device, map[*portgraph.AbstractPort]*opb.Port, error) {
 	var nodes []*portgraph.AbstractNode
 	var edges []*portgraph.AbstractEdge
 	name2Port := make(map[string]*portgraph.AbstractPort) // Name of the port to the AbstractPort.
 	node2Dev := make(map[*portgraph.AbstractNode]*opb.Device)
 	port2Port := make(map[*portgraph.AbstractPort]*opb.Port)
 
-	var matchATE string
-	for v := range ateVendors {
-		if matchATE != "" {
-			matchATE += "|"
-		}
-		matchATE += deviceVendors[v].String()
-	}
-	reATE := regexp.MustCompile(matchATE)
-
 	// addDevice creates an AbstractNode from a Device.
 	// If the field is empty, there is not a Constraint on that field.
 	addDevice := func(dev *opb.Device, isATE bool) {
 		nodeConstraints := make(map[string]portgraph.NodeConstraint)
 		if isATE {
-			nodeConstraints[vendorAttr] = portgraph.Regex(reATE)
+			nodeConstraints[roleAttr] = portgraph.Equal(roleATE)
 		} else {
-			nodeConstraints[vendorAttr] = portgraph.NotRegex(reATE)
+			nodeConstraints[roleAttr] = portgraph.Equal(roleDUT)
 		}
 		if v := dev.GetVendor(); v != opb.Device_VENDOR_UNSPECIFIED {
 			nodeConstraints[vendorAttr] = portgraph.Equal(v.String())
@@ -129,6 +138,9 @@ func testbedToAbstractGraph(tb *opb.Testbed) (*portgraph.AbstractGraph, map[*por
 		}
 		if sw, ok := versionConstraint(dev); ok {
 			nodeConstraints[swAttr] = sw
+		}
+		if name, ok := partial[dev.GetId()]; ok {
+			nodeConstraints[nameAttr] = portgraph.Equal(name)
 		}
 		for k, v := range dev.GetExtraDimensions() {
 			nodeConstraints[k] = portgraph.Equal(v)
@@ -148,8 +160,11 @@ func testbedToAbstractGraph(tb *opb.Testbed) (*portgraph.AbstractGraph, map[*por
 			if pmd, ok := pmdConstraint(port); ok {
 				portConstraints[pmdAttr] = pmd
 			}
-			// Create the AbstractPort, but do not add group constraints until all ports are processed.
 			portName := fmt.Sprintf("%s:%s", dev.GetId(), port.GetId())
+			if name, ok := partial[portName]; ok {
+				portConstraints[nameAttr] = portgraph.Equal(name)
+			}
+			// Create the AbstractPort, but do not add group constraints until all ports are processed.
 			p := &portgraph.AbstractPort{Desc: portName, Constraints: portConstraints}
 			name2Port[portName] = p
 
@@ -317,11 +332,17 @@ func topoToConcreteGraph(topo *tpb.Topology) (*portgraph.ConcreteGraph, map[*por
 		if vendor, ok := deviceVendors[node.GetVendor()]; ok {
 			attrs[vendorAttr] = vendor.String()
 		}
+		if r := role(node); r != "" {
+			attrs[roleAttr] = r
+		}
 		if m := node.GetModel(); m != "" {
 			attrs[hwAttr] = m
 		}
 		if os := node.GetOs(); os != "" {
 			attrs[swAttr] = os
+		}
+		if name := node.GetName(); name != "" {
+			attrs[nameAttr] = name
 		}
 		var ports []*portgraph.ConcretePort
 		for intfName, nodeIntf := range node.GetInterfaces() {
@@ -331,6 +352,12 @@ func topoToConcreteGraph(topo *tpb.Topology) (*portgraph.ConcreteGraph, map[*por
 			}
 			if group := nodeIntf.GetGroup(); group != "" {
 				portAttrs[groupAttr] = group
+			}
+			switch {
+			case nodeIntf.GetName() != "": // use the vendor name if specified
+				portAttrs[nameAttr] = nodeIntf.GetName()
+			case intfName != "": // else use the interface name
+				portAttrs[nameAttr] = intfName
 			}
 			p, i := makePortAndIntf(node.GetName(), intfName, nodeIntf.GetName(), portAttrs)
 			port2Intf[p] = i
@@ -436,7 +463,7 @@ func runtimeProtoCheck() error {
 }
 
 // Solve creates a new Reservation from a desired testbed and an available topology.
-func Solve(tb *opb.Testbed, topo *tpb.Topology) (*binding.Reservation, error) {
+func Solve(tb *opb.Testbed, topo *tpb.Topology, partial map[string]string) (*binding.Reservation, error) {
 	if err := runtimeProtoCheck(); err != nil {
 		return nil, err
 	}
@@ -451,7 +478,7 @@ func Solve(tb *opb.Testbed, topo *tpb.Topology) (*binding.Reservation, error) {
 			" testbed has %d links and topology only has %d links", numTBLinks, numTopoLinks)
 	}
 
-	abstractGraph, absNode2Dev, absPort2Port, err := testbedToAbstractGraph(tb)
+	abstractGraph, absNode2Dev, absPort2Port, err := testbedToAbstractGraph(tb, partial)
 	if err != nil {
 		return nil, fmt.Errorf("could not parse specified testbed: %w", err)
 	}

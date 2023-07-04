@@ -47,6 +47,10 @@ func genNodeCombos(m map[*AbstractNode][]*ConcreteNode, absNode2Node2NumEdges ma
 		for _, w := range absNode2Node2NumEdges[keys[j]] {
 			jWeight += w
 		}
+		// If weight is the same, sort by Desc (alphabetically).
+		if iWeight == jWeight {
+			return keys[i].Desc < keys[j].Desc
+		}
 		return iWeight > jWeight
 	})
 	go func() {
@@ -155,14 +159,14 @@ func (g *nodeGenerator) recurse(nodes []*AbstractNode) bool {
 			g.res[first] = n
 			g.used[n] = true
 			if !g.recurse(nodes[1:]) {
-				delete(g.conNode2Node2NeedPorts, n)
-				for k := range g.conNode2Node2NeedPorts[n] {
-					delete(g.conNode2Node2NeedPorts[k], n)
-				}
 				return false
 			}
 			delete(g.used, n)
 			delete(g.res, first)
+			for k := range g.conNode2Node2NeedPorts[n] {
+				delete(g.conNode2Node2NeedPorts[k], n)
+			}
+			delete(g.conNode2Node2NeedPorts, n)
 		}
 	}
 	return true

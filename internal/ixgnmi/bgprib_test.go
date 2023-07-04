@@ -16,6 +16,7 @@ package ixgnmi
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"golang.org/x/net/context"
@@ -98,15 +99,6 @@ func TestBGPRIBFromIxia(t *testing.T) {
 		},
 		wantErr: "duplicate key",
 	}, {
-		desc: "invalid AS path",
-		getRsps: map[string]string{
-			bgp4ID + "/learnedInfo/1/table/1": `{
-					"columns": ["Origin", "AS Path"],
-					"values": [["EGP", "foo"]]
-				}`,
-		},
-		wantErr: "invalid AS path",
-	}, {
 		desc: "invalid AS segment",
 		getRsps: map[string]string{
 			bgp4ID + "/learnedInfo/1/table/1": `{
@@ -161,18 +153,18 @@ func TestBGPRIBFromIxia(t *testing.T) {
 		getRsps: map[string]string{
 			bgp4ID + "/learnedInfo/1/table/1": `{
 				"id": 1,
-				"columns": ["IPv4 Prefix ", "Prefix Length", "Path ID", "IPv4 Next Hop", "Origin", "AIGP", "Local Preference", "MED", "Community", "AS Path"],
+				"columns": ["IPv4 Prefix ", "Prefix Length", "Path ID", "IPv4 Next Hop", "Origin", "AIGP", "Local Preference", "MED", "Community", "Color", "AS Path"],
 				"values": [
-					["127.0.0.1", "30", "1", "127.0.0.2", "IGP", "200", "1000", "100", "65532 : 10200, 65533 : 10100", "<65532 65533>"],
-					["127.0.0.3", "24", "2", "127.0.0.4", "EGP",    "",     "",    "",                             "",              ""]
+					["127.0.0.1", "30", "1", "127.0.0.2", "IGP", "200", "1000", "100", "65532 : 10200, 65533 : 10100", "foo, bar", "<65532 65533>"],
+					["127.0.0.3", "24", "2", "127.0.0.4", "EGP",    "",     "",    "",                             "",         "",              ""]
 				]
 			}`,
 			bgp6ID + "/learnedInfo/1/table/1": `{
 				"id": 2,
-				"columns": ["IPv6 Prefix", "Prefix Length", "Path ID", "IPv6 Next Hop", "Origin", "AIGP", "Local Preference", "MED", "Community", "AS Path"],
+				"columns": ["IPv6 Prefix", "Prefix Length", "Path ID", "IPv6 Next Hop", "Origin", "AIGP", "Local Preference", "MED", "Community", "Color", "AS Path"],
 				"values": [
-					["::1", "28", "3", "::2", "Incomplete", "200", "1000", "100", "65534 : 10400, 65535 : 10300", "<65534 65535>"],
-					["::3", "26", "4", "::4",        "IGP",   "",     "",    "",                              "",              ""]
+					["::1", "28", "3", "::2", "Incomplete", "200", "1000", "100", "65534 : 10400, 65535 : 10300", "baz", "<65534 65535>"],
+					["::3", "26", "4", "::4",        "IGP",   "",     "",    "",                              "",    "",              ""]
 				]
 			}`,
 		},
@@ -306,6 +298,27 @@ func TestBGPRIBFromIxia(t *testing.T) {
 									Index: ygot.Uint64(3),
 								},
 							},
+							ExtCommunity: map[uint64]*oc.NetworkInstance_Protocol_Bgp_Rib_ExtCommunity{
+								0: &oc.NetworkInstance_Protocol_Bgp_Rib_ExtCommunity{
+									Index: ygot.Uint64(0),
+									ExtCommunity: []oc.NetworkInstance_Protocol_Bgp_Rib_ExtCommunity_ExtCommunity_Union{
+										oc.UnionString("foo"),
+										oc.UnionString("bar"),
+									},
+								},
+								1: &oc.NetworkInstance_Protocol_Bgp_Rib_ExtCommunity{
+									Index: ygot.Uint64(1),
+								},
+								2: &oc.NetworkInstance_Protocol_Bgp_Rib_ExtCommunity{
+									Index: ygot.Uint64(2),
+									ExtCommunity: []oc.NetworkInstance_Protocol_Bgp_Rib_ExtCommunity_ExtCommunity_Union{
+										oc.UnionString("baz"),
+									},
+								},
+								3: &oc.NetworkInstance_Protocol_Bgp_Rib_ExtCommunity{
+									Index: ygot.Uint64(3),
+								},
+							},
 						},
 					},
 				},
@@ -340,6 +353,64 @@ func TestBGPRIBFromIxia(t *testing.T) {
 			}
 			if d := cmp.Diff(test.want, got); d != "" {
 				t.Errorf("bgpRIBFromIxia() got unexpected diff (-want +got)\n%s", d)
+			}
+		})
+	}
+}
+
+func TestParseASSegments(t *testing.T) {
+	tests := []struct {
+		desc    string
+		asPath  string
+		want    []*oc.NetworkInstance_Protocol_Bgp_Rib_AttrSet_AsSegment
+		wantErr string
+	}{{
+		desc: "empty",
+	}, {
+		desc:   "single seq",
+		asPath: "<1 2 3>",
+		want: []*oc.NetworkInstance_Protocol_Bgp_Rib_AttrSet_AsSegment{{
+			Index:  ygot.Uint32(0),
+			Type:   oc.RibBgp_AsPathSegmentType_AS_SEQ,
+			Member: []uint32{1, 2, 3},
+		}},
+	}, {
+		desc:   "single set",
+		asPath: "{1,2,3}",
+		want: []*oc.NetworkInstance_Protocol_Bgp_Rib_AttrSet_AsSegment{{
+			Index:  ygot.Uint32(0),
+			Type:   oc.RibBgp_AsPathSegmentType_AS_SET,
+			Member: []uint32{1, 2, 3},
+		}},
+	}, {
+		desc:   "complicated",
+		asPath: " < 1 2 > {3 , 4,		5 } <6 >",
+		want: []*oc.NetworkInstance_Protocol_Bgp_Rib_AttrSet_AsSegment{{
+			Index:  ygot.Uint32(0),
+			Type:   oc.RibBgp_AsPathSegmentType_AS_SEQ,
+			Member: []uint32{1, 2},
+		}, {
+			Index:  ygot.Uint32(1),
+			Type:   oc.RibBgp_AsPathSegmentType_AS_SET,
+			Member: []uint32{3, 4, 5},
+		}, {
+			Index:  ygot.Uint32(2),
+			Type:   oc.RibBgp_AsPathSegmentType_AS_SEQ,
+			Member: []uint32{6},
+		}},
+	}, {
+		desc:    "invalid",
+		asPath:  "<foo>",
+		wantErr: "invalid",
+	}}
+	for _, test := range tests {
+		t.Run(test.desc, func(t *testing.T) {
+			segs, err := parseASSegments(test.asPath)
+			if (err == nil) != (test.wantErr == "") || (err != nil && !strings.Contains(err.Error(), test.wantErr)) {
+				t.Errorf("parseASSegments(%q) got error %v, want error containing %q", test.asPath, err, test.wantErr)
+			}
+			if diff := cmp.Diff(test.want, segs); diff != "" {
+				t.Errorf("parseASSegments(%q) got unexpected diff (-want +got): %s", test.asPath, diff)
 			}
 		})
 	}

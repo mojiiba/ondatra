@@ -65,7 +65,9 @@ func TestSolve(t *testing.T) {
 		  }
 		  interfaces: {
 		    key: "eth1"
-		    value: {}
+		    value: {
+					name: "GigabitEthernet0/0/0/0"
+				}
 		  }
 		  interfaces: {
 		    key: "eth2"
@@ -95,6 +97,15 @@ func TestSolve(t *testing.T) {
 		    key: "eth1"
 		    value: {}
 		  }
+		}
+		nodes: {
+		  name: "node5"
+		  vendor: OPENCONFIG
+			model: "MAGNA"
+		  labels: {
+				key: "ondatra-role"
+				value: "ATE"
+			}
 		}
 		links: {
 		  a_node: "node1"
@@ -133,9 +144,13 @@ func TestSolve(t *testing.T) {
 		SoftwareVersionValue: &opb.Device_SoftwareVersionRegex{"^evo$"},
 		Ports:                []*opb.Port{{Id: "port1"}},
 	}
-	ate := &opb.Device{
-		Id:    "ate",
+	ate1 := &opb.Device{
+		Id:    "ate1",
 		Ports: []*opb.Port{{Id: "port1"}},
+	}
+	ate2 := &opb.Device{
+		Id:     "ate2",
+		Vendor: opb.Device_OPENCONFIG,
 	}
 	link12 := &opb.Link{
 		A: "dut1:port1",
@@ -147,7 +162,7 @@ func TestSolve(t *testing.T) {
 	}
 	link14 := &opb.Link{
 		A: "dut1:port2",
-		B: "ate:port1",
+		B: "ate1:port1",
 	}
 
 	wantDUTServices := map[string]*tpb.Service{
@@ -173,7 +188,7 @@ func TestSolve(t *testing.T) {
 			Name:   "node2",
 			Vendor: opb.Device_CISCO,
 			Ports: map[string]*binding.Port{
-				"port1": {Name: "eth1"},
+				"port1": {Name: "GigabitEthernet0/0/0/0"},
 				"port2": {Name: "eth2"},
 			},
 			CustomData: map[string]any{KNEServiceMapKey: wantDUTServices},
@@ -196,7 +211,7 @@ func TestSolve(t *testing.T) {
 		NodeVendor: tpb.Vendor_JUNIPER,
 	}
 	wantATEServices := make(map[string]*tpb.Service)
-	wantATE := &ServiceATE{
+	wantATE1 := &ServiceATE{
 		AbstractATE: &binding.AbstractATE{&binding.Dims{
 			Name:   "node4",
 			Vendor: opb.Device_IXIA,
@@ -208,10 +223,22 @@ func TestSolve(t *testing.T) {
 		Services:   wantATEServices,
 		NodeVendor: tpb.Vendor_KEYSIGHT,
 	}
+	wantATE2 := &ServiceATE{
+		AbstractATE: &binding.AbstractATE{&binding.Dims{
+			Name:          "node5",
+			Vendor:        opb.Device_OPENCONFIG,
+			HardwareModel: "MAGNA",
+			Ports:         map[string]*binding.Port{},
+			CustomData:    map[string]any{KNEServiceMapKey: wantATEServices},
+		}},
+		Services:   wantATEServices,
+		NodeVendor: tpb.Vendor_OPENCONFIG,
+	}
 
 	tests := []struct {
 		desc    string
 		tb      *opb.Testbed
+		partial map[string]string
 		wantRes *binding.Reservation
 	}{{
 		desc: "one dut",
@@ -225,14 +252,109 @@ func TestSolve(t *testing.T) {
 			ATEs: map[string]binding.ATE{},
 		},
 	}, {
+		desc: "one dut with partial",
+		tb: &opb.Testbed{
+			Duts: []*opb.Device{
+				&opb.Device{
+					Id: "dut",
+				},
+			},
+		},
+		partial: map[string]string{"dut": "node3"},
+		wantRes: &binding.Reservation{
+			DUTs: map[string]binding.DUT{
+				"dut": &ServiceDUT{
+					AbstractDUT: &binding.AbstractDUT{&binding.Dims{
+						Name:            "node3",
+						Vendor:          opb.Device_JUNIPER,
+						HardwareModel:   "cptx",
+						SoftwareVersion: "evo",
+						Ports:           map[string]*binding.Port{},
+						CustomData:      map[string]any{KNEServiceMapKey: wantDUTServices},
+					}},
+					Services:   wantDUTServices,
+					NodeVendor: tpb.Vendor_JUNIPER,
+				},
+			},
+			ATEs: map[string]binding.ATE{},
+		},
+	}, {
+		desc: "one dut with partial + port intf name",
+		tb: &opb.Testbed{
+			Duts: []*opb.Device{
+				&opb.Device{
+					Id:    "dut",
+					Ports: []*opb.Port{&opb.Port{Id: "port"}},
+				},
+			},
+		},
+		partial: map[string]string{"dut": "node2", "dut:port": "eth2"},
+		wantRes: &binding.Reservation{
+			DUTs: map[string]binding.DUT{
+				"dut": &ServiceDUT{
+					AbstractDUT: &binding.AbstractDUT{&binding.Dims{
+						Name:   "node2",
+						Vendor: opb.Device_CISCO,
+						Ports: map[string]*binding.Port{
+							"port": {Name: "eth2"},
+						},
+						CustomData: map[string]any{KNEServiceMapKey: wantDUTServices},
+					}},
+					Services:   wantDUTServices,
+					NodeVendor: tpb.Vendor_CISCO,
+				},
+			},
+			ATEs: map[string]binding.ATE{},
+		},
+	}, {
+		desc: "one dut with partial + port vendor name",
+		tb: &opb.Testbed{
+			Duts: []*opb.Device{
+				&opb.Device{
+					Id:    "dut",
+					Ports: []*opb.Port{&opb.Port{Id: "port"}},
+				},
+			},
+		},
+		partial: map[string]string{"dut": "node2", "dut:port": "GigabitEthernet0/0/0/0"},
+		wantRes: &binding.Reservation{
+			DUTs: map[string]binding.DUT{
+				"dut": &ServiceDUT{
+					AbstractDUT: &binding.AbstractDUT{&binding.Dims{
+						Name:   "node2",
+						Vendor: opb.Device_CISCO,
+						Ports: map[string]*binding.Port{
+							"port": {Name: "GigabitEthernet0/0/0/0"},
+						},
+						CustomData: map[string]any{KNEServiceMapKey: wantDUTServices},
+					}},
+					Services:   wantDUTServices,
+					NodeVendor: tpb.Vendor_CISCO,
+				},
+			},
+			ATEs: map[string]binding.ATE{},
+		},
+	}, {
 		desc: "one ate",
 		tb: &opb.Testbed{
-			Ates: []*opb.Device{ate},
+			Ates: []*opb.Device{ate1},
 		},
 		wantRes: &binding.Reservation{
 			DUTs: map[string]binding.DUT{},
 			ATEs: map[string]binding.ATE{
-				"ate": wantATE,
+				"ate1": wantATE1,
+			},
+		},
+	}, {
+		desc: "two ates",
+		tb: &opb.Testbed{
+			Ates: []*opb.Device{ate1, ate2},
+		},
+		wantRes: &binding.Reservation{
+			DUTs: map[string]binding.DUT{},
+			ATEs: map[string]binding.ATE{
+				"ate1": wantATE1,
+				"ate2": wantATE2,
 			},
 		},
 	}, {
@@ -252,7 +374,7 @@ func TestSolve(t *testing.T) {
 		desc: "dut and ate",
 		tb: &opb.Testbed{
 			Duts:  []*opb.Device{dut1},
-			Ates:  []*opb.Device{ate},
+			Ates:  []*opb.Device{ate1},
 			Links: []*opb.Link{link14},
 		},
 		wantRes: &binding.Reservation{
@@ -260,7 +382,7 @@ func TestSolve(t *testing.T) {
 				"dut1": wantDUT1,
 			},
 			ATEs: map[string]binding.ATE{
-				"ate": wantATE,
+				"ate1": wantATE1,
 			},
 		},
 	}, {
@@ -281,7 +403,7 @@ func TestSolve(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.desc, func(t *testing.T) {
-			gotRes, err := Solve(test.tb, topo)
+			gotRes, err := Solve(test.tb, topo, test.partial)
 			if err != nil {
 				t.Fatalf("Solve() got unexpected error: %v", err)
 			}
@@ -495,7 +617,7 @@ func TestPortGroupsSolve(t *testing.T) {
 		Links: []*opb.Link{link1, link2, link3, link4, link5, link6, link7, link8, link9, link10, link11, link12, link13, link14, link15},
 	}
 
-	res, err := Solve(tb, topo)
+	res, err := Solve(tb, topo, nil)
 	if err != nil {
 		t.Fatalf("Solve() got unexpected error: %v", err)
 	}
@@ -570,7 +692,7 @@ func TestTestbedToAbstractGraph(t *testing.T) {
 		"ate:port1":          port,
 	}
 
-	graph, node2Dev, port2Port, err := testbedToAbstractGraph(tb)
+	graph, node2Dev, port2Port, err := testbedToAbstractGraph(tb, nil)
 	if err != nil {
 		t.Fatalf("testbedToAbstractGraph() got error %v, want nil", err)
 	}
@@ -611,30 +733,39 @@ func TestTopologyToConcreteGraph(t *testing.T) {
 		Os:         "eos",
 		Interfaces: map[string]*tpb.Interface{"eth1": intf1},
 	}
-	ate := &tpb.Node{
-		Name:       "ate",
+	ate1 := &tpb.Node{
+		Name:       "ate1",
 		Vendor:     tpb.Vendor_KEYSIGHT,
 		Interfaces: map[string]*tpb.Interface{"eth1": intf2},
 	}
+	ate2 := &tpb.Node{
+		Name:   "ate2",
+		Vendor: tpb.Vendor_OPENCONFIG,
+		Labels: map[string]string{"ondatra-role": "ATE"},
+	}
 	topo := &tpb.Topology{
-		Nodes: []*tpb.Node{node, ate},
+		Nodes: []*tpb.Node{node, ate1, ate2},
 	}
 
-	wantNode := map[string]*tpb.Node{"node": node, "ate": ate}
-	wantIntf := map[string]*tpb.Interface{"node:eth1": intf1, "ate:eth1": intf2}
+	wantNode := map[string]*tpb.Node{"node": node, "ate1": ate1, "ate2": ate2}
+	wantIntf := map[string]*tpb.Interface{"node:eth1": intf1, "ate1:eth1": intf2}
 
 	graph, node2Node, _, err := topoToConcreteGraph(topo)
 	if err != nil {
 		t.Fatalf("topoToConcreteGraph() got error %v, want nil", err)
 	}
-	if len(graph.Nodes) != 2 {
-		t.Fatalf("topoToConcreteGraph() got %d nodes, want 2", len(graph.Nodes))
+	if len(graph.Nodes) != 3 {
+		t.Fatalf("topoToConcreteGraph() got %d nodes, want 3", len(graph.Nodes))
 	}
 	for _, node := range graph.Nodes {
-		if got, ok := node2Node[node]; !ok {
+		got, ok := node2Node[node]
+		if !ok {
 			t.Errorf("topoToConcreteGraph() got node %q not mapped to any device", node.Desc)
 		} else if diff := cmp.Diff(wantNode[node.Desc], got, protocmp.Transform()); diff != "" {
 			t.Errorf("topoToConcreteGraph() returned unexpected device diff (-want +got):\n%s", diff)
+		}
+		if gotRole, wantRole := node.Attrs["role"], role(got); gotRole != wantRole {
+			t.Errorf("node %q got role %q, want role %q", node.Desc, gotRole, wantRole)
 		}
 		for _, port := range node.Ports {
 			wantIntf, ok := wantIntf[port.Desc]
@@ -648,6 +779,61 @@ func TestTopologyToConcreteGraph(t *testing.T) {
 				t.Errorf("port %q got group %q, want group %q", port.Desc, gotGroup, wantGroup)
 			}
 		}
+	}
+}
+
+func TestRole(t *testing.T) {
+	tests := []struct {
+		desc string
+		node *tpb.Node
+		want string
+	}{{
+		desc: "default DUT",
+		node: &tpb.Node{
+			Name: "node",
+		},
+		want: roleDUT,
+	}, {
+		desc: "vendor DUT",
+		node: &tpb.Node{
+			Name:   "node",
+			Vendor: tpb.Vendor_ARISTA,
+		},
+		want: roleDUT,
+	}, {
+		desc: "vendor ATE",
+		node: &tpb.Node{
+			Name:   "node",
+			Vendor: tpb.Vendor_KEYSIGHT,
+		},
+		want: roleATE,
+	}, {
+		desc: "label ATE",
+		node: &tpb.Node{
+			Name:   "node",
+			Vendor: tpb.Vendor_ARISTA,
+			Labels: map[string]string{
+				roleLabel: roleATE,
+			},
+		},
+		want: roleATE,
+	}, {
+		desc: "label DUT",
+		node: &tpb.Node{
+			Name:   "node",
+			Vendor: tpb.Vendor_KEYSIGHT,
+			Labels: map[string]string{
+				roleLabel: roleDUT,
+			},
+		},
+		want: roleDUT,
+	}}
+	for _, tc := range tests {
+		t.Run(tc.desc, func(t *testing.T) {
+			if got := role(tc.node); got != tc.want {
+				t.Errorf("role(%v) = %v, want %v", tc.node.GetName(), got, tc.want)
+			}
+		})
 	}
 }
 
@@ -734,6 +920,23 @@ func TestSolveErrors(t *testing.T) {
 					}`,
 		wantErr: "Node \"dut1\" was not assigned",
 	}, {
+		desc: "no match for DUT - role label override",
+		tb: &opb.Testbed{
+			Duts: []*opb.Device{{
+				Id: "dut1",
+			}},
+		},
+		topo: `
+				nodes: {
+					name: "node1"
+					vendor: ARISTA
+					labels: {
+						key: "ondatra-role"
+						value: "ATE"
+					}
+				}`,
+		wantErr: "Node \"dut1\" was not assigned",
+	}, {
 		desc: "no match for ATE",
 		tb: &opb.Testbed{
 			Ates: []*opb.Device{{
@@ -745,6 +948,23 @@ func TestSolveErrors(t *testing.T) {
 			  name: "node1"
 			  vendor: CISCO
 			}`,
+		wantErr: "Node \"ate1\" was not assigned",
+	}, {
+		desc: "no match for ATE - role label override",
+		tb: &opb.Testbed{
+			Ates: []*opb.Device{{
+				Id: "ate1",
+			}},
+		},
+		topo: `
+				nodes: {
+					name: "node1"
+					vendor: KEYSIGHT
+					labels: {
+						key: "ondatra-role"
+						value: "DUT"
+					}
+				}`,
 		wantErr: "Node \"ate1\" was not assigned",
 	}, {
 		desc: "no node combination",
@@ -976,7 +1196,7 @@ func TestSolveErrors(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.desc, func(t *testing.T) {
 			topo := unmarshalTopo(t, test.topo)
-			_, gotErr := Solve(test.tb, topo)
+			_, gotErr := Solve(test.tb, topo, nil)
 			if diff := errdiff.Substring(gotErr, test.wantErr); diff != "" {
 				t.Fatalf("Reserve() got unexpected error diff: %s", diff)
 			}

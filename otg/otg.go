@@ -50,6 +50,7 @@ func (o *OTG) String() string {
 }
 
 // NewConfig creates a new OTG config.
+// Deprecated: Use gosnappi.NewConfig directly.
 func (o *OTG) NewConfig(t testing.TB) gosnappi.Config {
 	t.Helper()
 	t = events.ActionStarted(t, "Creating new config for %s", o.ate)
@@ -104,18 +105,30 @@ func pushConfig(ctx context.Context, ate binding.ATE, cfg gosnappi.Config) ([]st
 	return resp.Warnings(), nil
 }
 
-// FetchConfig fetches config from the ATE.
+// GetConfig gets the current config.
+func (o *OTG) GetConfig(t testing.TB) gosnappi.Config {
+	t.Helper()
+	t = events.ActionStarted(t, "Getting config from %s", o.ate)
+	cfg, err := getConfig(context.Background(), o.ate)
+	if err != nil {
+		t.Fatalf("GetConfig(t) on %s: %v", o.ate, err)
+	}
+	return cfg
+}
+
+// FetchConfig gets the current config.
+// Deprecated: Use GetConfig instead.
 func (o *OTG) FetchConfig(t testing.TB) gosnappi.Config {
 	t.Helper()
 	t = events.ActionStarted(t, "Fetching config from %s", o.ate)
-	cfg, err := fetchConfig(context.Background(), o.ate)
+	cfg, err := getConfig(context.Background(), o.ate)
 	if err != nil {
 		t.Fatalf("FetchConfig(t) on %s: %v", o.ate, err)
 	}
 	return cfg
 }
 
-func fetchConfig(ctx context.Context, ate binding.ATE) (gosnappi.Config, error) {
+func getConfig(ctx context.Context, ate binding.ATE) (gosnappi.Config, error) {
 	api, err := rawapis.FetchOTG(ctx, ate)
 	if err != nil {
 		return nil, err
@@ -127,7 +140,7 @@ func fetchConfig(ctx context.Context, ate binding.ATE) (gosnappi.Config, error) 
 func (o *OTG) StartProtocols(t testing.TB) {
 	t.Helper()
 	t = events.ActionStarted(t, "Starting protocols on %s", o.ate)
-	warns, err := setProtocolState(context.Background(), o.ate, gosnappi.ProtocolStateState.START)
+	warns, err := o.setProtocolState(context.Background(), gosnappi.StateProtocolAllState.START)
 	if err != nil {
 		t.Fatalf("StartProtocols(t) on %s: %v", o.ate, err)
 	}
@@ -140,7 +153,7 @@ func (o *OTG) StartProtocols(t testing.TB) {
 func (o *OTG) StopProtocols(t testing.TB) {
 	t.Helper()
 	t = events.ActionStarted(t, "Stopping protocols on %s", o.ate)
-	warns, err := setProtocolState(context.Background(), o.ate, gosnappi.ProtocolStateState.STOP)
+	warns, err := o.setProtocolState(context.Background(), gosnappi.StateProtocolAllState.STOP)
 	if err != nil {
 		t.Fatalf("StopProtocols(t) on %s: %v", o.ate, err)
 	}
@@ -149,12 +162,10 @@ func (o *OTG) StopProtocols(t testing.TB) {
 	}
 }
 
-func setProtocolState(ctx context.Context, ate binding.ATE, state gosnappi.ProtocolStateStateEnum) ([]string, error) {
-	api, err := rawapis.FetchOTG(ctx, ate)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := api.SetProtocolState(api.NewProtocolState().SetState(state))
+func (o *OTG) setProtocolState(ctx context.Context, state gosnappi.StateProtocolAllStateEnum) ([]string, error) {
+	controlState := gosnappi.NewControlState()
+	controlState.Protocol().All().SetState(state)
+	resp, err := o.setControlState(ctx, controlState)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +178,7 @@ func (o *OTG) StartTraffic(t testing.TB) {
 	// TODO(greg-dennis): Remove sleep when Keysight fixes a MAC resolution bug.
 	time.Sleep(2 * time.Second)
 	t = events.ActionStarted(t, "Starting traffic on %s", o.ate)
-	warns, err := setTransmitState(context.Background(), o.ate, gosnappi.TransmitStateState.START)
+	warns, err := o.setTransmitState(context.Background(), gosnappi.StateTrafficFlowTransmitState.START)
 	if err != nil {
 		t.Fatalf("StartTraffic(t) on %s: %v", o.ate, err)
 	}
@@ -180,7 +191,7 @@ func (o *OTG) StartTraffic(t testing.TB) {
 func (o *OTG) StopTraffic(t testing.TB) {
 	t.Helper()
 	t = events.ActionStarted(t, "Stopping traffic on %s", o.ate)
-	warns, err := setTransmitState(context.Background(), o.ate, gosnappi.TransmitStateState.STOP)
+	warns, err := o.setTransmitState(context.Background(), gosnappi.StateTrafficFlowTransmitState.STOP)
 	if err != nil {
 		t.Fatalf("StopTraffic(t) on %s: %v", o.ate, err)
 	}
@@ -189,149 +200,91 @@ func (o *OTG) StopTraffic(t testing.TB) {
 	}
 }
 
-func setTransmitState(ctx context.Context, ate binding.ATE, state gosnappi.TransmitStateStateEnum) ([]string, error) {
-	api, err := rawapis.FetchOTG(ctx, ate)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := api.SetTransmitState(api.NewTransmitState().SetState(state))
-	if err != nil {
-		return nil, err
-	}
-	return resp.Warnings(), nil
-}
-
-// AdvertiseRoutes advertises routes on the ATE.
-func (o *OTG) AdvertiseRoutes(t testing.TB, routes []string) {
-	t.Helper()
-	t = events.ActionStarted(t, "Advertising routes on %v", o.ate)
-	warns, err := setRouteState(context.Background(), o.ate, routes, gosnappi.RouteStateState.ADVERTISE)
-	if err != nil {
-		t.Fatalf("AdvertiseRoutes(t) on %s: %v", o.ate, err)
-	}
-	if len(warns) > 0 {
-		t.Logf("AdvertiseRoutes(t) on %s non-fatal warnings: %v", o.ate, warns)
-	}
-}
-
-// WithdrawRoutes withdraws routes on the ATE.
-func (o *OTG) WithdrawRoutes(t testing.TB, routes []string) {
-	t.Helper()
-	t = events.ActionStarted(t, "Withdrawing routes for %v", o.ate)
-	warns, err := setRouteState(context.Background(), o.ate, routes, gosnappi.RouteStateState.WITHDRAW)
-	if err != nil {
-		t.Fatalf("WithdrawRoutes(t) on %s: %v", o.ate, err)
-	}
-	if len(warns) > 0 {
-		t.Logf("WithdrawRoutes(t) on %s non-fatal warnings: %v", o.ate, warns)
-	}
-}
-
-func setRouteState(ctx context.Context, ate binding.ATE, routes []string, state gosnappi.RouteStateStateEnum) ([]string, error) {
-	api, err := rawapis.FetchOTG(ctx, ate)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := api.SetRouteState(api.NewRouteState().SetState(state).SetNames(routes))
+func (o *OTG) setTransmitState(ctx context.Context, state gosnappi.StateTrafficFlowTransmitStateEnum) ([]string, error) {
+	controlState := gosnappi.NewControlState()
+	controlState.Traffic().FlowTransmit().SetState(state)
+	resp, err := o.setControlState(ctx, controlState)
 	if err != nil {
 		return nil, err
 	}
 	return resp.Warnings(), nil
 }
 
-// EnableLACPMembers enables lacp member ports on the ATE.
-func (o *OTG) EnableLACPMembers(t testing.TB, ports ...string) {
+// SetControlState sets the operational state of configured resources.
+func (o *OTG) SetControlState(t testing.TB, state gosnappi.ControlState) {
 	t.Helper()
-	t = events.ActionStarted(t, "EnableLACPMembers on %v", o.ate)
-	warns, err := setLACPMemberState(context.Background(), o.ate, gosnappi.LacpMemberStateState.UP, ports)
+	t = events.ActionStarted(t, "SetControlState on %v", o.ate)
+	resp, err := o.setControlState(context.Background(), state)
 	if err != nil {
-		t.Fatalf("EnableLACPMembers(t) on %s: %v", o.ate, err)
+		t.Fatalf("SetControlState(t) on %s: %v", o.ate, err)
 	}
-	if len(warns) > 0 {
-		t.Logf("EnableLACPMembers(t) on %s non-fatal warnings: %v", o.ate, warns)
+	if len(resp.Warnings()) > 0 {
+		t.Logf("SetControlState(t) on %s non-fatal warnings: %v", o.ate, resp.Warnings())
 	}
+}
+
+func (o *OTG) setControlState(ctx context.Context, state gosnappi.ControlState) (gosnappi.Warning, error) {
+	api, err := rawapis.FetchOTG(ctx, o.ate)
+	if err != nil {
+		return nil, err
+	}
+	return api.SetControlState(state)
+}
+
+// SetControlAction triggers actions against configured resources.
+func (o *OTG) SetControlAction(t testing.TB, action gosnappi.ControlAction) {
+	t.Helper()
+	t = events.ActionStarted(t, "SetControlAction on %v", o.ate)
+	resp, err := o.setControlAction(action)
+	if err != nil {
+		t.Fatalf("SetControlAction(t) on %s: %v", o.ate, err)
+	}
+	if len(resp.Warnings()) > 0 {
+		t.Logf("SetControlAction(t) on %s non-fatal warnings: %v", o.ate, resp.Warnings())
+	}
+}
+
+func (o *OTG) setControlAction(action gosnappi.ControlAction) (gosnappi.ControlActionResponse, error) {
+	api, err := rawapis.FetchOTG(context.Background(), o.ate)
+	if err != nil {
+		return nil, err
+	}
+	return api.SetControlAction(action)
 }
 
 // DisableLACPMembers disables lacp member ports on the ATE.
+// Deprecated: Use SetControlState instead.
 func (o *OTG) DisableLACPMembers(t testing.TB, ports ...string) {
 	t.Helper()
 	t = events.ActionStarted(t, "DisableLACPMembers on %v", o.ate)
-	warns, err := setLACPMemberState(context.Background(), o.ate, gosnappi.LacpMemberStateState.DOWN, ports)
+	controlState := gosnappi.NewControlState()
+	controlState.Protocol().Lacp().Admin().SetState(gosnappi.StateProtocolLacpAdminState.DOWN).SetLagMemberNames(ports)
+	resp, err := o.setControlState(context.Background(), controlState)
 	if err != nil {
 		t.Fatalf("DisableLACPMembers(t) on %s: %v", o.ate, err)
 	}
-	if len(warns) > 0 {
-		t.Logf("DisableLACPMembers(t) on %s non-fatal warnings: %v", o.ate, warns)
+	if len(resp.Warnings()) > 0 {
+		t.Logf("DisableLACPMembers(t) on %s non-fatal warnings: %v", o.ate, resp.Warnings())
 	}
 }
 
-func setLACPMemberState(ctx context.Context, ate binding.ATE, state gosnappi.LacpMemberStateStateEnum, lagMemberPorts []string) ([]string, error) {
-	api, err := rawapis.FetchOTG(ctx, ate)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := api.SetDeviceState(api.NewDeviceState().SetLacpMemberState(gosnappi.NewLacpMemberState().SetLagMemberPortNames(lagMemberPorts).SetState(state)))
-	if err != nil {
-		return nil, err
-	}
-	return resp.Warnings(), nil
-}
-
-// StartCapture starts capturing bytes on the specified ports.
-func (o *OTG) StartCapture(t testing.TB, portNames ...string) {
+// GetCapture gets the results of a port capture.
+func (o *OTG) GetCapture(t testing.TB, req gosnappi.CaptureRequest) []byte {
 	t.Helper()
-	t = events.ActionStarted(t, "StartCapture on %v", o.ate)
-	warns, err := setCaptureState(context.Background(), o.ate, gosnappi.CaptureStateState.START, portNames)
+	t = events.ActionStarted(t, "GetCapture on %v", o.ate)
+	bytes, err := getCapture(context.Background(), o.ate, req)
 	if err != nil {
-		t.Fatalf("StartCapture(t) on %s: %v", o.ate, err)
-	}
-	if len(warns) > 0 {
-		t.Logf("StartCapture(t) on %s non-fatal warnings: %v", o.ate, warns)
-	}
-}
-
-// StopCapture starts capturing bytes on the specified ports.
-func (o *OTG) StopCapture(t testing.TB, portNames ...string) {
-	t.Helper()
-	t = events.ActionStarted(t, "StopCapture on %v", o.ate)
-	warns, err := setCaptureState(context.Background(), o.ate, gosnappi.CaptureStateState.STOP, portNames)
-	if err != nil {
-		t.Fatalf("StopCapture(t) on %s: %v", o.ate, err)
-	}
-	if len(warns) > 0 {
-		t.Logf("StopCapture(t) on %s non-fatal warnings: %v", o.ate, warns)
-	}
-}
-
-func setCaptureState(ctx context.Context, ate binding.ATE, state gosnappi.CaptureStateStateEnum, portNames []string) ([]string, error) {
-	api, err := rawapis.FetchOTG(ctx, ate)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := api.SetCaptureState(api.NewCaptureState().SetState(state).SetPortNames(portNames))
-	if err != nil {
-		return nil, err
-	}
-	return resp.Warnings(), nil
-}
-
-// FetchCapture fetches the captured bytes on the specified port.
-func (o *OTG) FetchCapture(t testing.TB, portName string) []byte {
-	t.Helper()
-	t = events.ActionStarted(t, "FetchCapture on %v", o.ate)
-	bytes, err := fetchCapture(context.Background(), o.ate, portName)
-	if err != nil {
-		t.Fatalf("FetchCapture(t) on %s: %v", o.ate, err)
+		t.Fatalf("GetCapture(t) on %s: %v", o.ate, err)
 	}
 	return bytes
 }
 
-func fetchCapture(ctx context.Context, ate binding.ATE, postName string) ([]byte, error) {
+func getCapture(ctx context.Context, ate binding.ATE, req gosnappi.CaptureRequest) ([]byte, error) {
 	api, err := rawapis.FetchOTG(ctx, ate)
 	if err != nil {
 		return nil, err
 	}
-	return api.GetCapture(api.NewCaptureRequest().SetPortName(postName))
+	return api.GetCapture(req)
 }
 
 // GNMIOpts returns a new set of options to customize gNMI queries.

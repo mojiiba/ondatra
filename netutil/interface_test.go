@@ -43,27 +43,28 @@ func TestLoopbackInterface(t *testing.T) {
 	}, {
 		desc:   "juniper",
 		vendor: ondatra.JUNIPER,
-		num:    3,
-		want:   "lo3",
+		num:    0,
+		want:   "lo0",
 	}, {
 		desc:   "nokia",
 		vendor: ondatra.NOKIA,
 		num:    4,
 		want:   "lo4",
 	}, {
-		desc:    "no prefix",
+		desc:    "not supported",
 		vendor:  ondatra.IXIA,
-		wantErr: "no loopback interface prefix",
+		wantErr: "not supported",
 	}, {
-		desc:    "negative num",
+		desc:    "negative index",
 		vendor:  ondatra.ARISTA,
 		num:     -3,
-		wantErr: "negative number",
+		wantErr: "negative",
 	}}
 
 	for _, test := range tests {
 		t.Run(test.desc, func(t *testing.T) {
-			got, err := loopbackInterface(test.vendor, test.num)
+			dut := &fakeDUT{vendor: test.vendor}
+			got, err := loopbackInterface(dut, test.num)
 			if (err == nil) != (test.wantErr == "") || (err != nil && !strings.Contains(err.Error(), test.wantErr)) {
 				t.Errorf("loopbackInterface got err %v, want %s", err, test.wantErr)
 			}
@@ -74,7 +75,7 @@ func TestLoopbackInterface(t *testing.T) {
 	}
 }
 
-func TestBundleInterface(t *testing.T) {
+func TestAggregateInterface(t *testing.T) {
 	tests := []struct {
 		desc    string
 		vendor  ondatra.Vendor
@@ -84,99 +85,49 @@ func TestBundleInterface(t *testing.T) {
 	}{{
 		desc:   "arista",
 		vendor: ondatra.ARISTA,
-		num:    3,
-		want:   "Port-Channel3",
+		num:    1,
+		want:   "Port-Channel2",
 	}, {
 		desc:   "cisco",
 		vendor: ondatra.CISCO,
-		num:    13,
-		want:   "Bundle-Ether13",
+		num:    2,
+		want:   "Bundle-Ether3",
 	}, {
 		desc:   "juniper",
 		vendor: ondatra.JUNIPER,
-		num:    113,
-		want:   "ae113",
+		num:    0,
+		want:   "ae0",
 	}, {
 		desc:   "nokia",
 		vendor: ondatra.NOKIA,
-		num:    24,
-		want:   "lag24",
+		num:    4,
+		want:   "lag5",
 	}, {
-		desc:    "no prefix",
+		desc:    "not supported",
 		vendor:  ondatra.IXIA,
-		wantErr: "no bundle interface prefix",
+		wantErr: "not supported",
 	}, {
-		desc:    "negative num",
+		desc:    "negative index",
 		vendor:  ondatra.ARISTA,
 		num:     -3,
-		wantErr: "negative number",
+		wantErr: "negative",
 	}}
 
 	for _, test := range tests {
 		t.Run(test.desc, func(t *testing.T) {
-			got, err := bundleInterface(test.vendor, test.num)
+			dut := &fakeDUT{vendor: test.vendor}
+			got, err := aggregateInterface(dut, test.num)
 			if (err == nil) != (test.wantErr == "") || (err != nil && !strings.Contains(err.Error(), test.wantErr)) {
-				t.Errorf("bundleInterface got err %v, want %s", err, test.wantErr)
+				t.Errorf("aggregateInterface got err %v, want %s", err, test.wantErr)
 			}
 			if got != test.want {
-				t.Errorf("bundleInterface got %s, want %s", got, test.want)
+				t.Errorf("aggregateInterface got %s, want %s", got, test.want)
 			}
 		})
 	}
 }
 
-func TestVLANInterface(t *testing.T) {
-	tests := []struct {
-		desc    string
-		vendor  ondatra.Vendor
-		num     int
-		want    string
-		wantErr string
-	}{{
-		desc:   "arista",
-		vendor: ondatra.ARISTA,
-		num:    105,
-		want:   "Vlan105",
-	}, {
-		desc:   "cisco",
-		vendor: ondatra.CISCO,
-		num:    65,
-		want:   "BVI65",
-	}, {
-		desc:   "juniper",
-		vendor: ondatra.JUNIPER,
-		num:    5,
-		want:   "irb.5",
-	}, {
-		desc:   "nokia",
-		vendor: ondatra.NOKIA,
-		num:    6,
-		want:   "irb1.6",
-	}, {
-		desc:    "no prefix",
-		vendor:  ondatra.IXIA,
-		wantErr: "no VLAN interface prefix",
-	}, {
-		desc:    "negative num",
-		vendor:  ondatra.CISCO,
-		num:     -5,
-		wantErr: "negative number",
-	}}
-
-	for _, test := range tests {
-		t.Run(test.desc, func(t *testing.T) {
-			got, err := vlanInterface(test.vendor, test.num)
-			if (err == nil) != (test.wantErr == "") || (err != nil && !strings.Contains(err.Error(), test.wantErr)) {
-				t.Errorf("vlanInterface got err %v, want %s", err, test.wantErr)
-			}
-			if got != test.want {
-				t.Errorf("vlanInterface got %s, want %s", got, test.want)
-			}
-		})
-	}
-}
-
-func TestNextBundleInterface(t *testing.T) {
+func TestNextAggregateInterface(t *testing.T) {
 	tests := []struct {
 		desc    string
 		vendor  ondatra.Vendor
@@ -194,7 +145,7 @@ func TestNextBundleInterface(t *testing.T) {
 	}, {
 		desc:   "juniper first",
 		vendor: ondatra.JUNIPER,
-		want:   "ae1",
+		want:   "ae0",
 	}, {
 		desc:   "nokia first",
 		vendor: ondatra.NOKIA,
@@ -208,9 +159,9 @@ func TestNextBundleInterface(t *testing.T) {
 		},
 		want: "Port-Channel2",
 	}, {
-		desc:    "no range",
+		desc:    "not supported",
 		vendor:  ondatra.IXIA,
-		wantErr: "no bundle interface",
+		wantErr: "not supported",
 	}}
 
 	for _, test := range tests {
@@ -221,69 +172,26 @@ func TestNextBundleInterface(t *testing.T) {
 					Interface: test.intfs,
 				})
 			}
-			got, err := nextBundleInterface(t, test.vendor, val)
+			dut := &fakeDUT{vendor: test.vendor}
+			got, err := nextAggregateInterface(dut, val)
 			if (err == nil) != (test.wantErr == "") || (err != nil && !strings.Contains(err.Error(), test.wantErr)) {
-				t.Errorf("nextBundleInterface got err %v, want %s", err, test.wantErr)
+				t.Errorf("nextAggregateInterface got err %v, want %s", err, test.wantErr)
 			}
 			if got != test.want {
-				t.Errorf("nextBundleInterface got %s, want %s", got, test.want)
+				t.Errorf("nextAggregateInterface got %s, want %s", got, test.want)
 			}
 		})
 	}
 }
 
-func TestNextVLANInterface(t *testing.T) {
-	tests := []struct {
-		desc    string
-		vendor  ondatra.Vendor
-		intfs   map[string]*oc.Interface
-		want    string
-		wantErr string
-	}{{
-		desc:   "arista first",
-		vendor: ondatra.ARISTA,
-		want:   "Vlan1",
-	}, {
-		desc:   "cisco first",
-		vendor: ondatra.CISCO,
-		want:   "BVI1",
-	}, {
-		desc:   "juniper first",
-		vendor: ondatra.JUNIPER,
-		want:   "irb.1",
-	}, {
-		desc:   "nokia first",
-		vendor: ondatra.NOKIA,
-		want:   "irb1.1",
-	}, {
-		desc:   "between intfs",
-		vendor: ondatra.CISCO,
-		intfs: map[string]*oc.Interface{
-			"BVI1": &oc.Interface{},
-			"BVI3": &oc.Interface{},
-		},
-		want: "BVI2",
-	}, {
-		desc:    "no range",
-		vendor:  ondatra.IXIA,
-		wantErr: "no VLAN interface",
-	}}
+type fakeDUT struct {
+	vendor ondatra.Vendor
+}
 
-	for _, test := range tests {
-		t.Run(test.desc, func(t *testing.T) {
-			val := &ygnmi.Value[*oc.Root]{}
-			if test.intfs != nil {
-				val.SetVal(&oc.Root{
-					Interface: test.intfs,
-				})
-			}
-			got, err := nextVLANInterface(t, test.vendor, val)
-			if (err == nil) != (test.wantErr == "") || (err != nil && !strings.Contains(err.Error(), test.wantErr)) {
-				t.Errorf("nextVLANInterface got err %v, want %s", err, test.wantErr)
-			}
-			if got != test.want {
-				t.Errorf("nextVLANInterface got %s, want %s", got, test.want)
-			}
-		})
-	}
+func (d *fakeDUT) Vendor() ondatra.Vendor {
+	return d.vendor
+}
+
+func (d *fakeDUT) Model() string {
+	return ""
 }
