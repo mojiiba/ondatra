@@ -40,6 +40,7 @@ import (
 // CommonDialOpts to include in all gRPC dial calls.
 // TODO(greg-dennis): Unexport once IxNetwork is removed.
 var CommonDialOpts = []grpc.DialOption{
+	grpc.WithBlock(),
 	withUnaryAnnotateErrors(),
 	withStreamAnnotateErrors(),
 }
@@ -107,6 +108,32 @@ func FetchGNOI(ctx context.Context, dut binding.DUT) (binding.GNOIClients, error
 			return nil, fmt.Errorf("error dialing gNOI: %w", err)
 		}
 		gnois[dut] = c
+	}
+	return c, nil
+}
+
+var (
+	gnsiMu sync.Mutex
+	gnsis  = make(map[binding.DUT]binding.GNSIClients)
+)
+
+// NewGNSI creates a gNSI client for the specified DUT.
+func NewGNSI(ctx context.Context, dut binding.DUT) (binding.GNSIClients, error) {
+	return dut.DialGNSI(ctx, CommonDialOpts...)
+}
+
+// FetchGNSI fetches the cached gNSI client for the specified DUT.
+func FetchGNSI(ctx context.Context, dut binding.DUT) (binding.GNSIClients, error) {
+	gnsiMu.Lock()
+	defer gnsiMu.Unlock()
+	c, ok := gnsis[dut]
+	if !ok {
+		var err error
+		c, err = NewGNSI(ctx, dut)
+		if err != nil {
+			return nil, fmt.Errorf("error dialing gNSI: %w", err)
+		}
+		gnsis[dut] = c
 	}
 	return c, nil
 }
